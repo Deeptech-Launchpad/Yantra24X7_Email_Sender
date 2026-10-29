@@ -8,6 +8,7 @@ interface RecipientRow {
   id: string
   position: number
   companyName: string
+  sheet: string | null
   contactName: string | null
   toEmail: string | null
   cc: string[]
@@ -237,6 +238,7 @@ export function CampaignDetail() {
                 <tr key={r.id}>
                   <td>
                     {r.companyName}
+                    {c.sheetName?.includes(' + ') && r.sheet && <div className="cell-dim">Sheet: {r.sheet}</div>}
                     <div className="muted">
                       {r.contactName ?? ''}
                       {r.templateNumber ? ` · template ${r.templateNumber}` : ''}

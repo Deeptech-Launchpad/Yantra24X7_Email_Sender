@@ -223,6 +223,7 @@ const Setup = z
     excelFileId: id,
     allowWebmail: z.boolean().optional(),
     sheet: z.string().min(1).max(100).optional(),
+    sheets: z.array(z.string().min(1).max(100)).min(1).max(3).optional(),
     onePer: z.enum(['company', 'person']).optional(),
     replyTo: z.string().max(254).optional(),
     senderAccountId: id,

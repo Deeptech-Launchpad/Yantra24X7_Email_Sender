@@ -33,9 +33,32 @@ interface Analysis {
   duplicates: Array<{ row: number; companyName: string; email: string }>
   columns: { company: string | null; status: string | null; contacts: Array<{ email: string }> }
 }
+/** One sheet of the workbook in the "each sheet with its own email" mode. */
+interface SheetPlan {
+  sheet: string
+  use: boolean
+  templateId: string
+  /** People with a usable address on this sheet; null while it is being read. */
+  people: number | null
+  /** Why the sheet cannot be used (no Company / Email columns …). */
+  problem: string | null
+}
+
+/** The saved template that belongs to a sheet: "Mailer 1 - Discovery" ↔ "Mailer 1 – Discovery" (by its number, else by its name). */
+function matchTemplate(sheet: string, templates: Template[]): string {
+  const num = (s: string) => /mailer\s*(\d+)/i.exec(s)?.[1] ?? null
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+  const n = num(sheet)
+  const byNumber = n ? templates.filter((t) => num(t.name) === n) : []
+  if (byNumber.length === 1) return byNumber[0]!.id
+  const byName = templates.filter((t) => norm(t.name) === norm(sheet))
+  return byName.length === 1 ? byName[0]!.id : ''
+}
+
 interface ReviewRow {
   position: number
   companyName: string
+  sheet: string | null
   contactName: string | null
   toEmail: string | null
   ccEmails: string[]
@@ -61,6 +84,7 @@ interface Review {
   replyTo: string | null
   onePer: OnePer
   sheet: string
+  sheets: string[]
   copyColleagues: boolean
   sender: { id: string; email: string; ready: boolean; problems: string[]; remainingToday: number; dailyLimit: number }
   sendMode: 'test' | 'live'
@@ -96,6 +120,9 @@ export function NewCampaign() {
   const [excel, setExcel] = useState<FileInfo | null>(null)
   const [allowWebmail, setAllowWebmail] = useState(false)
   const [sheet, setSheet] = useState('')
+  // 'one': one sheet (the template(s) below); 'sheets': several sheets in one campaign, each with its own email.
+  const [mode, setMode] = useState<'one' | 'sheets'>('one')
+  const [plans, setPlans] = useState<SheetPlan[]>([])
   const [onePer, setOnePer] = useState<OnePer>('company')
   const [replyTo, setReplyTo] = useState('')
   const [analysis, setAnalysis] = useState<Analysis | null>(null)
@@ -120,18 +147,25 @@ export function NewCampaign() {
   const [confirmed, setConfirmed] = useState(false)
 
   const usable = (accounts.data?.accounts ?? []).filter((a) => a.usable && a.status === 'connected')
-  const templateOk = templates.every((t) => (t.source === 'saved' ? Boolean(t.templateId) : Boolean(t.subject.trim() && visibleText(t.bodyHtml))))
-  const sendable = analysis ? analysis.companies.filter((c) => !c.skip && c.people.length > 0).length : 0
+  const usedPlans = plans.filter((p) => p.use && !p.problem)
+  const templateOk =
+    mode === 'sheets'
+      ? usedPlans.length > 0 && usedPlans.length <= config.limits.maxTemplates && usedPlans.every((p) => Boolean(p.templateId))
+      : templates.every((t) => (t.source === 'saved' ? Boolean(t.templateId) : Boolean(t.subject.trim() && visibleText(t.bodyHtml))))
+  const sendable = mode === 'sheets' ? usedPlans.reduce((n, p) => n + (p.people ?? 0), 0) : analysis ? analysis.companies.filter((c) => !c.skip && c.people.length > 0).length : 0
 
   const setup = (over: { excludeUnmatched?: boolean; excludePositions?: number[] } = {}) => ({
     excelFileId: excel!.id,
     allowWebmail,
-    ...(sheet ? { sheet } : {}),
+    ...(mode === 'sheets' ? { sheets: usedPlans.map((p) => p.sheet) } : sheet ? { sheet } : {}),
     onePer,
     ...(replyTo.trim() ? { replyTo: replyTo.trim() } : {}),
     senderAccountId: senderId,
-    templates: templates.map((t) => (t.source === 'saved' ? { templateId: t.templateId } : { subject: t.subject.trim(), bodyHtml: t.bodyHtml })),
-    ...(templates.length > 1 ? { templateOrder: order, ...(order === 'random' ? { shuffleSeed: seed } : {}) } : {}),
+    templates:
+      mode === 'sheets'
+        ? usedPlans.map((p) => ({ templateId: p.templateId }))
+        : templates.map((t) => (t.source === 'saved' ? { templateId: t.templateId } : { subject: t.subject.trim(), bodyHtml: t.bodyHtml })),
+    ...(mode === 'one' && templates.length > 1 ? { templateOrder: order, ...(order === 'random' ? { shuffleSeed: seed } : {}) } : {}),
     cc,
     copyColleagues,
     attachmentIds: attachments.map((a) => a.id),
@@ -154,6 +188,22 @@ export function NewCampaign() {
     setConfirmed(false)
   }
 
+  // Every sheet of the workbook is read, to show how many people it has and to pick its email by name.
+  const refreshPlans = async (excelId: string, sheets: string[], webmail: boolean, per: OnePer, keep: SheetPlan[] = []) => {
+    const list = saved.data?.templates ?? (await api.get<{ templates: Template[] }>('/templates')).templates
+    const next: SheetPlan[] = []
+    for (const name of sheets) {
+      const before = keep.find((p) => p.sheet === name)
+      try {
+        const a = await api.post<Analysis>('/campaigns/analyze', { excelFileId: excelId, sheet: name, allowWebmail: webmail, onePer: per })
+        const people = a.companies.filter((c) => !c.skip && c.people.length > 0).length
+        next.push({ sheet: name, use: before ? before.use : people > 0, templateId: before?.templateId || matchTemplate(name, list), people, problem: null })
+      } catch (e) {
+        next.push({ sheet: name, use: false, templateId: '', people: null, problem: (e as Error).message })
+      }
+    }
+    setPlans(next)
+  }
   const uploadExcel = (f: File | undefined) => {
     if (!f) return
     void act.run('excel', async () => {
@@ -165,7 +215,17 @@ export function NewCampaign() {
       const a = await api.post<Analysis>('/campaigns/analyze', { excelFileId: stored.id, allowWebmail, onePer })
       setSheet(a.sheet)
       setAnalysis(a)
+      if (mode === 'sheets') await refreshPlans(stored.id, a.sheets, allowWebmail, onePer)
     })
+  }
+  const chooseMode = (next: 'one' | 'sheets') => {
+    setMode(next)
+    invalidate()
+    if (next === 'sheets' && excel && analysis) void act.run('excel', () => refreshPlans(excel.id, analysis.sheets, allowWebmail, onePer, plans))
+  }
+  const setPlan = (name: string, patch: Partial<SheetPlan>) => {
+    setPlans((ps) => ps.map((p) => (p.sheet === name ? { ...p, ...patch } : p)))
+    invalidate()
   }
   const reanalyze = (over: { webmail?: boolean; sheet?: string; onePer?: OnePer }) => {
     const next = { webmail: over.webmail ?? allowWebmail, sheet: over.sheet ?? sheet, onePer: over.onePer ?? onePer }
@@ -176,7 +236,11 @@ export function NewCampaign() {
     setExcluded([])
     invalidate()
     if (excel)
-      void act.run('excel', async () => setAnalysis(await api.post<Analysis>('/campaigns/analyze', { excelFileId: excel.id, allowWebmail: next.webmail, onePer: next.onePer, ...(next.sheet ? { sheet: next.sheet } : {}) })))
+      void act.run('excel', async () => {
+        const a = await api.post<Analysis>('/campaigns/analyze', { excelFileId: excel.id, allowWebmail: next.webmail, onePer: next.onePer, ...(next.sheet ? { sheet: next.sheet } : {}) })
+        setAnalysis(a)
+        if (mode === 'sheets') await refreshPlans(excel.id, a.sheets, next.webmail, next.onePer, plans)
+      })
   }
   const addFiles = (files: FileList | null) => {
     if (!files?.length) return
@@ -365,6 +429,19 @@ export function NewCampaign() {
             )}
           </div>
           {analysis && analysis.sheets.length > 1 && (
+            <fieldset className="field" style={{ border: 0, padding: 0 }}>
+              <legend>Sheets</legend>
+              <label className="check">
+                <input type="radio" name="mode" checked={mode === 'one'} onChange={() => chooseMode('one')} />
+                <span>One sheet</span>
+              </label>
+              <label className="check">
+                <input type="radio" name="mode" checked={mode === 'sheets'} onChange={() => chooseMode('sheets')} />
+                <span>Several sheets in one campaign — each sheet is sent with its own email (for example the Mailer 1, 2 and 3 sheets)</span>
+              </label>
+            </fieldset>
+          )}
+          {analysis && analysis.sheets.length > 1 && mode === 'one' && (
             <label className="field">
               Sheet
               <select value={sheet} onChange={(e) => reanalyze({ sheet: e.target.value })}>
@@ -394,6 +471,60 @@ export function NewCampaign() {
             </span>
           </label>
 
+          {mode === 'sheets' && analysis && (
+            <section className="bulk-section" aria-label="Sheets and their emails">
+              <h3>Sheets and their emails</h3>
+              <p className="note">
+                Each sheet is sent with the saved template you choose for it — nothing is mixed. The email is picked by name where it can be (&ldquo;Mailer 1&rdquo; sheet ↔ &ldquo;Mailer 1&rdquo; template). The review shows, for every person, the
+                sheet and the email. At most {config.limits.maxTemplates} sheets in one campaign.
+              </p>
+              {saved.data && saved.data.templates.length === 0 && (
+                <p className="note">
+                  No saved templates yet — <Link to="/templates">create them</Link> first (one per sheet).
+                </p>
+              )}
+              <div className="otr-scroll">
+                <table className="otr-table">
+                  <thead>
+                    <tr>
+                      <th>Send</th>
+                      <th>Sheet</th>
+                      <th>People</th>
+                      <th>Email for this sheet</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {plans.map((p) => (
+                      <tr key={p.sheet}>
+                        <td>
+                          <input type="checkbox" aria-label={`Send sheet ${p.sheet}`} checked={p.use} disabled={Boolean(p.problem) || p.people === 0} onChange={(e) => setPlan(p.sheet, { use: e.target.checked })} />
+                        </td>
+                        <td>{p.sheet}</td>
+                        <td>{p.problem ? <span className="cell-dim">{p.problem}</span> : p.people === null ? '…' : p.people}</td>
+                        <td>
+                          {p.problem ? (
+                            '—'
+                          ) : (
+                            <select aria-label={`Email for ${p.sheet}`} value={p.templateId} disabled={!p.use} onChange={(e) => setPlan(p.sheet, { templateId: e.target.value })}>
+                              <option value="">Choose…</option>
+                              {(saved.data?.templates ?? []).map((s) => (
+                                <option key={s.id} value={s.id}>
+                                  {s.name} — {s.subject}
+                                </option>
+                              ))}
+                            </select>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {usedPlans.length > config.limits.maxTemplates && <p className="otr-warn">Choose at most {config.limits.maxTemplates} sheets for one campaign.</p>}
+            </section>
+          )}
+
+          {mode === 'one' && (
           <section className="bulk-section" aria-label="Email">
             <h3>Email</h3>
             <p className="note">
@@ -427,6 +558,7 @@ export function NewCampaign() {
               </div>
             )}
           </section>
+          )}
 
           <section className="bulk-section" aria-label="Sender">
             <h3>Sender</h3>
@@ -472,7 +604,14 @@ export function NewCampaign() {
             <EmailList value={cc} onChange={(v) => (setCc(v), invalidate())} max={config.limits.maxCc} label="CC address" />
           </section>
 
-          {analysis && (
+          {analysis && mode === 'sheets' && (
+            <ul className="otr-list">
+              <li>
+                <strong>{sendable}</strong> {onePer === 'person' ? 'people' : 'companies'} on {usedPlans.length} sheet{usedPlans.length === 1 ? '' : 's'}, each with its own email. The review lists every one of them.
+              </li>
+            </ul>
+          )}
+          {analysis && mode === 'one' && (
             <>
               <ul className="otr-list">
                 <li>
@@ -528,7 +667,7 @@ export function NewCampaign() {
             </>
           )}
           <div className="row" style={{ marginTop: 'var(--s3)' }}>
-            <button type="button" className="btn primary" disabled={!analysis || sendableRows.length === 0 || !senderId || !templateOk || Boolean(act.busy)} onClick={() => go('review')}>
+            <button type="button" className="btn primary" disabled={!analysis || (mode === 'sheets' ? sendable === 0 : sendableRows.length === 0) || !senderId || !templateOk || Boolean(act.busy)} onClick={() => go('review')}>
               Next: review emails
             </button>
           </div>
@@ -591,6 +730,7 @@ export function NewCampaign() {
                   <thead>
                     <tr>
                       <th>Send</th>
+                      {review.sheets.length > 1 && <th>Sheet</th>}
                       <th>Company</th>
                       <th>Person</th>
                       <th>Template</th>
@@ -625,6 +765,7 @@ export function NewCampaign() {
                               />
                             )}
                           </td>
+                          {review.sheets.length > 1 && <td className="cell-dim">{r.sheet}</td>}
                           <td>{r.companyName}</td>
                           <td>
                             {r.contactName ?? '—'}
@@ -677,6 +818,7 @@ export function NewCampaign() {
                   </p>
                   <p>
                     {preview.templateNumber && review.templates.length > 1 && <Chip tone="info">Template {preview.templateNumber}</Chip>}{' '}
+                    {review.sheets.length > 1 && preview.sheet && <Chip>Sheet: {preview.sheet}</Chip>}{' '}
                     <span className="field-label" style={{ display: 'inline', margin: 0 }}>
                       Subject
                     </span>{' '}
@@ -795,15 +937,28 @@ export function NewCampaign() {
                 </li>
                 {review.schedule.limitNote && <li className="cell-dim">{review.schedule.limitNote}</li>}
                 <li>
-                  Recipients: sheet <strong>{review.sheet}</strong>, {review.onePer === 'person' ? 'one email per person' : 'one email per company'}
+                  Recipients: {review.sheets.length > 1 ? 'sheets' : 'sheet'} <strong>{review.sheet}</strong>, {review.onePer === 'person' ? 'one email per person' : 'one email per company'}
                 </li>
+                {review.templateOrder === 'by_sheet' && (
+                  <li>
+                    Each sheet with its own email:{' '}
+                    {review.sheets
+                      .map((name, i) => {
+                        const plan = usedPlans[i]
+                        const t = (saved.data?.templates ?? []).find((x) => x.id === plan?.templateId)
+                        const n = review.rows.filter((r) => r.status === 'ready' && r.sheet === name).length
+                        return `${name} → ${t ? t.name : `template ${i + 1}`} (${n} emails)`
+                      })
+                      .join(' · ')}
+                  </li>
+                )}
                 <li>
                   Replies go to: <strong>{review.replyTo ?? review.sender.email}</strong>
                 </li>
                 <li>CC: {[...(review.copyColleagues ? ['colleagues from the Excel'] : []), ...review.cc].join(', ') || 'none'}</li>
                 <li>
                   Templates: {review.templates.map((t) => `${review.templates.length > 1 ? `${t.number}. ` : ''}${t.subject}`).join(' · ')}
-                  {review.templateOrder ? ` (${review.templateOrder === 'random' ? 'at random' : 'in order'})` : ''}
+                  {review.templateOrder && review.templateOrder !== 'by_sheet' ? ` (${review.templateOrder === 'random' ? 'at random' : 'in order'})` : ''}
                 </li>
                 {review.attachments.length > 0 && <li>Attachments on every email: {review.attachments.map((a) => `${a.fileName} (${formatSize(a.sizeBytes)})`).join(', ')}</li>}
                 {review.companyZip && <li>Company PDFs from {review.companyZip.fileName}: each email carries only its own company&rsquo;s PDF.</li>}

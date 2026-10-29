@@ -105,6 +105,7 @@ export async function startCampaign(user: Principal, s: CampaignSetup & { confir
         campaignId: id,
         position: r.position,
         companyName: r.companyName,
+        sheetName: r.sheet,
         contactName: r.contactName,
         toEmail: r.toEmail,
         ccJson: toJson(r.ccEmails),
@@ -214,6 +215,7 @@ export async function campaignView(id: string) {
       id: r.id,
       position: r.position,
       companyName: r.companyName,
+      sheet: r.sheetName,
       contactName: r.contactName,
       toEmail: r.toEmail,
       cc: fromJson<string[]>(r.ccJson, []),
@@ -360,11 +362,11 @@ export function csvCell(v: unknown): string {
 
 export async function campaignReportCsv(id: string): Promise<{ fileName: string; csv: string }> {
   const v = await campaignView(id)
-  const head = ['Row', 'Company', 'Contact', 'To', 'CC', 'Status', 'Category', 'Reason', 'Template', 'Subject', 'Company PDF', 'Scheduled', 'Sent', 'Attempts', 'Gmail message id', 'Opens', 'First opened']
+  const head = ['Row', 'Sheet', 'Company', 'Contact', 'To', 'CC', 'Status', 'Category', 'Reason', 'Template', 'Subject', 'Company PDF', 'Scheduled', 'Sent', 'Attempts', 'Gmail message id', 'Opens', 'First opened']
   const lines = [head.map(csvCell).join(',')]
   for (const r of v.recipients) {
     lines.push(
-      [r.position + 1, r.companyName, r.contactName, r.toEmail, r.cc.join('; '), r.status, r.category, r.reason, r.templateNumber, r.subject, r.companyFile?.fileName, r.scheduledLocal, r.sentLocal, r.attempts, r.gmailMessageId, r.trackingEnabled ? r.openCount : '', r.firstOpenedLocal]
+      [r.position + 1, r.sheet, r.companyName, r.contactName, r.toEmail, r.cc.join('; '), r.status, r.category, r.reason, r.templateNumber, r.subject, r.companyFile?.fileName, r.scheduledLocal, r.sentLocal, r.attempts, r.gmailMessageId, r.trackingEnabled ? r.openCount : '', r.firstOpenedLocal]
         .map(csvCell)
         .join(','),
     )

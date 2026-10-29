@@ -37,6 +37,11 @@ export interface CampaignSetup {
   allowWebmail?: boolean
   /** The worksheet to read (default: the first with an email heading). */
   sheet?: string
+  /**
+   * Several worksheets in ONE campaign, each with its OWN template: sheets[i] is sent with templates[i]
+   * (for example "Mailer 1" → template 1, "Mailer 2" → template 2). Replaces `sheet` and the rotation.
+   */
+  sheets?: string[]
   /** One email per company (colleagues copied; the default) or one per person. */
   onePer?: RecipientMode
   /** Where replies go, when not to the sender. */
@@ -64,6 +69,8 @@ export type CompanyFileStatus = 'matched' | 'missing' | 'ambiguous' | 'invalid' 
 export interface ReviewRow {
   position: number
   companyName: string
+  /** The worksheet of the Excel file this recipient came from. */
+  sheet: string | null
   contactName: string | null
   toEmail: string | null
   ccEmails: string[]
@@ -87,6 +94,8 @@ export interface PreparedSetup {
   seed: number
   cc: string[]
   replyTo: string | null
+  /** Each sheet has its own template (templates[i] is for sheets[i]). */
+  bySheet: boolean
   start: Date
   intervalMinutes: number
 }
@@ -111,7 +120,12 @@ export async function checkSetup(s: CampaignSetup): Promise<PreparedSetup> {
       throw e
     }
   }
-  const order: TemplateOrder = s.templateOrder === 'random' ? 'random' : 'sequential'
+  const bySheet = Array.isArray(s.sheets) && s.sheets.length > 0
+  if (bySheet) {
+    if (new Set(s.sheets).size !== s.sheets!.length) throw new BadRequestError('The same sheet is listed twice.')
+    if (s.sheets!.length !== templates.length) throw new BadRequestError('Each sheet needs exactly one template: choose a template for every sheet.')
+  }
+  const order: TemplateOrder = s.templateOrder === 'random' && !bySheet ? 'random' : 'sequential'
   const seed = order === 'random' ? Number(s.shuffleSeed) : 0
   if (order === 'random' && templates.length > 1 && !(Number.isInteger(seed) && seed >= 0 && seed <= 0x7fffffff)) throw new BadRequestError('The random order is missing. Choose Random again.')
   const cc: string[] = []
@@ -129,7 +143,7 @@ export async function checkSetup(s: CampaignSetup): Promise<PreparedSetup> {
   if (!Number.isFinite(intervalMinutes) || intervalMinutes < env.MIN_INTERVAL_MINUTES || intervalMinutes > 240) {
     throw new BadRequestError(`Minutes between emails must be ${env.MIN_INTERVAL_MINUTES} to 240.`)
   }
-  return { templates, order, seed, cc, replyTo, start, intervalMinutes }
+  return { templates, order, seed, cc, replyTo, bySheet, start, intervalMinutes }
 }
 
 function companyFileView(m: CompanyMatch, common: { count: number; bytes: number }) {
@@ -157,11 +171,36 @@ export async function analyzeExcel(user: Principal, excelFileId: string, opts: {
   return { file: info, sheets: book.sheets, sheet: book.sheet, onePer, ...x }
 }
 
+type Analysed = Extraction & { file: FileInfo; sheet: string; sheets: string[]; onePer: RecipientMode; bySheet: boolean }
+
+/** The list of one sheet, or — with several sheets in one campaign — the lists of every chosen sheet one after the other. */
+async function analyseForSetup(user: Principal, s: CampaignSetup): Promise<Analysed> {
+  const opts = { allowWebmail: s.allowWebmail === true, onePer: s.onePer }
+  if (!s.sheets?.length) return { ...(await analyzeExcel(user, s.excelFileId, { ...opts, sheet: s.sheet })), bySheet: false }
+  const parts: Array<Awaited<ReturnType<typeof analyzeExcel>>> = []
+  for (const name of s.sheets) parts.push(await analyzeExcel(user, s.excelFileId, { ...opts, sheet: name }))
+  const total = parts.reduce((n, p) => n + p.companies.length, 0)
+  if (total > MAX_RECIPIENTS) throw new BadRequestError(`At most ${MAX_RECIPIENTS} recipients per campaign (these sheets have ${total}).`)
+  return {
+    file: parts[0]!.file,
+    sheets: parts[0]!.sheets,
+    sheet: parts.map((p) => p.sheet).join(' + '),
+    onePer: parts[0]!.onePer,
+    bySheet: true,
+    headerRow: parts[0]!.headerRow,
+    columns: parts[0]!.columns,
+    totalRows: parts.reduce((n, p) => n + p.totalRows, 0),
+    companies: parts.flatMap((p, i) => p.companies.map((c) => ({ ...c, key: `${p.sheet}|${c.key}`, sheet: p.sheet, sheetIdx: i }))),
+    noAddress: parts.flatMap((p) => p.noAddress.map((r) => ({ ...r, companyName: `${r.companyName} (${p.sheet})` }))),
+    duplicates: parts.flatMap((p) => p.duplicates.map((r) => ({ ...r, companyName: `${r.companyName} (${p.sheet})` }))),
+  }
+}
+
 export async function prepareReview(user: Principal, s: CampaignSetup, now = new Date()) {
   const setup = await checkSetup(s)
   const account = await usableAccount(user, s.senderAccountId)
   const sender = await readiness(account.id, now)
-  const upload: Extraction & { file: FileInfo; sheet: string; onePer: RecipientMode } = await analyzeExcel(user, s.excelFileId, { allowWebmail: s.allowWebmail === true, sheet: s.sheet, onePer: s.onePer })
+  const upload = await analyseForSetup(user, s)
   const attachments = await stagedCommon(user, s.attachmentIds)
   const commonFiles = { count: attachments.length, bytes: attachments.reduce((n, a) => n + a.sizeBytes, 0) }
   const zip: (StagedZip & { sha256: string }) | null = s.companyZipId ? await stagedZipInfo(user, s.companyZipId) : null
@@ -199,6 +238,7 @@ export async function prepareReview(user: Principal, s: CampaignSetup, now = new
     const base = {
       position: rows.length,
       companyName: c.companyName,
+      sheet: c.sheet ?? upload.sheet,
       contactName: to?.name ?? null,
       toEmail: to?.email ?? c.people[0]?.email ?? null,
       ccEmails: [] as string[],
@@ -277,7 +317,8 @@ export async function prepareReview(user: Principal, s: CampaignSetup, now = new
       companyFile = view
     }
 
-    const pick = pickTemplate(setup.order, setup.templates.length, readyCount, setup.seed)
+    // One template per sheet (sheet i → template i), or the rotation of the campaign's templates.
+    const pick = setup.bySheet ? (c.sheetIdx ?? 0) : pickTemplate(setup.order, setup.templates.length, readyCount, setup.seed)
     const email = composeEmail({ template: setup.templates[pick]!, firstName: greetingName(to), companyName: c.companyName, signatureHtml: account.signatureHtml })
     if (email.unfilled.length) {
       skip('invalid', `Could not fill ${email.unfilled.join(', ')}.`, { contactName: to.name, toEmail: to.email })
@@ -329,7 +370,7 @@ export async function prepareReview(user: Principal, s: CampaignSetup, now = new
         sendMode: env.SEND_MODE,
         replyTo: setup.replyTo,
         attachments: attachments.map((a) => [a.id, a.sizeBytes]),
-        rows: rows.map((r) => [r.position, r.status, r.category, r.toEmail, r.ccEmails, r.subject, r.html, r.text, r.templateNumber, companyFiles.get(r.position)?.sha256 ?? r.companyFile?.fileName ?? null]),
+        rows: rows.map((r) => [r.position, r.status, r.category, r.toEmail, r.ccEmails, r.subject, r.html, r.text, r.templateNumber, r.sheet, companyFiles.get(r.position)?.sha256 ?? r.companyFile?.fileName ?? null]),
       }),
     )
     .digest('hex')
@@ -352,10 +393,11 @@ export async function prepareReview(user: Principal, s: CampaignSetup, now = new
     noAddress: upload.noAddress,
     duplicates: upload.duplicates,
     templates: setup.templates.map((t, i) => ({ number: i + 1, subject: t.subject, removed: t.removed })),
-    templateOrder: setup.templates.length > 1 ? setup.order : null,
+    templateOrder: setup.bySheet ? ('by_sheet' as const) : setup.templates.length > 1 ? setup.order : null,
     cc: setup.cc,
     replyTo: setup.replyTo,
     sheet: upload.sheet,
+    sheets: upload.bySheet ? (s.sheets ?? []) : [upload.sheet],
     onePer: upload.onePer,
     copyColleagues: upload.onePer === 'company' && s.copyColleagues !== false,
     sender: { id: account.id, email: account.email, displayName: account.displayName, ...sender },
@@ -393,5 +435,6 @@ export async function reviewCampaign(user: Principal, s: CampaignSetup, now = ne
   const { companyFiles: _f, setup: _s, ...view } = await prepareReview(user, s, now)
   void _f
   void _s
-  return view
+  // The screen shows the HTML of an email; the plain-text copy is only for sending (and would double a big review).
+  return { ...view, rows: view.rows.map(({ text: _t, ...row }) => (void _t, row)) }
 }

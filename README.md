@@ -28,7 +28,7 @@ Not carried over from the Marketing AI Agent: *Send to one person* and the *Skip
 
 | | |
 |---|---|
-| **Recipients** | Upload an `.xlsx`. Columns are found by their headings (Company Name, Contact Person 1, Email Id1, Contact Person 2, Email 2, Status …). A workbook with several sheets: choose the sheet (by default the first with an email heading, so a summary sheet is skipped). **One email per company** (the first named person receives it, colleagues are copied) or **one email per person** (every row its own email, nobody copied; `[First Name]` is the *First Name* column exactly as written). Up to 5,000 recipients. Only work addresses (webmail is off unless ticked). Rows without a usable address are listed with the reason. |
+| **Recipients** | Upload an `.xlsx`. Columns are found by their headings (Company Name, Contact Person 1, Email Id1, Contact Person 2, Email 2, Status …). A workbook with several sheets: choose the sheet (by default the first with an email heading, so a summary sheet is skipped). **Several sheets in one campaign, each with its own email** (for example the Mailer 1 / 2 / 3 sheets of one workbook: the *Mailer 1* sheet is sent the *Mailer 1* template, and so on — the template is picked by name where it can be, and the review shows the sheet and the email of every person; at most 3 sheets). **One email per company** (the first named person receives it, colleagues are copied) or **one email per person** (every row its own email, nobody copied; `[First Name]` is the *First Name* column exactly as written). Up to 5,000 recipients. Only work addresses (webmail is off unless ticked). Rows without a usable address are listed with the reason. |
 | **Counts** | Eligible, invalid (no address / no name to greet), duplicate (an address already in the campaign), excluded (Status column, do-not-email list, already queued, outcome unknown, same email already sent, excluded by hand), blocked (company PDF problem). |
 | **Templates** | Saved templates (subject + formatted body; paste from Gmail, Outlook or Word), or one written for the campaign. `[First Name]` and `[Company Name]` are filled per person. Up to 3 templates per campaign, in order or at random. Preview before sending. |
 | **Sender accounts** | Each member connects their own Gmail / Google Workspace account with Google's sign-in (send-only permission), **or adds it with a Gmail app password** (sent through Gmail's mail server; checked by signing in, stored encrypted, never shown again). Shown with status and daily usage; check readiness; signature; daily limit; disconnect / reconnect. Admins can share an account with the team. |
@@ -60,8 +60,8 @@ yanthara bulk email process project/
 │   ├── bulk/                    excel, extract, content, schedule, files, companyZip, review,
 │   │                            campaigns, dispatcher, senders, templates, suppression, tracking
 │   └── routes/api.ts            every API route, validated
-├── tests/                       94 tests: the whole workflow through the API against a fake Google and a fake Gmail mail server
-└── web/                         the screens (React + Vite), orange and white; 12 tests
+├── tests/                       98 tests: the whole workflow through the API against a fake Google and a fake Gmail mail server
+└── web/                         the screens (React + Vite), orange and white; 13 tests
 ```
 
 ---

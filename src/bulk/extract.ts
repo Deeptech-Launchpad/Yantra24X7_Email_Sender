@@ -42,6 +42,9 @@ export interface Company {
   status: string | null
   /** Why no email is sent to this company; null when one is. */
   skip: string | null
+  /** With several sheets in one campaign: the sheet this came from, and its place in the campaign's list of sheets. */
+  sheet?: string
+  sheetIdx?: number
 }
 
 export interface Extraction {

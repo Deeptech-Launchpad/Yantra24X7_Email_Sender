@@ -149,6 +149,8 @@ model Recipient {
   campaign          Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   position          Int
   companyName       String
+  /// The worksheet of the Excel file this recipient came from.
+  sheetName         String?
   contactName       String?
   toEmail           String?
   ccJson            String    @default("[]")

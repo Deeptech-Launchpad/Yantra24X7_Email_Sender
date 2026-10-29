@@ -48,6 +48,7 @@ function reviewFor(body: any, opts: { blocked?: boolean }) {
     replyTo: body.replyTo ?? null,
     onePer: body.onePer ?? 'company',
     sheet: 'Sheet1',
+    sheets: body.sheets ?? ['Sheet1'],
     copyColleagues: body.copyColleagues,
     sender: { id: 'acc1', email: ACCOUNT.email, ready: true, problems: [], remainingToday: 397, dailyLimit: 400 },
     sendMode: 'test',
@@ -75,9 +76,10 @@ function stub(opts: { role?: string; blocked?: boolean; campaign?: any } = {}) {
     if (p === '/api/senders' && method === 'GET') return json({ accounts: [ACCOUNT], googleConfigured: true })
     if (p === '/api/senders/connect') return json({ url: 'https://accounts.google.com/o/oauth2/v2/auth?state=abc' })
     if (p === '/api/senders/app-password') return json({ ...ACCOUNT, id: 'acc2', email: body.email, authType: 'app_password', displayName: body.displayName ?? null }, 201)
-    if (p === '/api/templates' && method === 'GET') return json({ templates: [{ id: 'tpl1', name: 'Intro', subject: 'A proposal for [Company Name]', bodyHtml: '<p>Hi [First Name]</p>', createdByUserId: 'u1', updatedAt: '' }] })
+    if (p === '/api/templates' && method === 'GET') return json({ templates: [{ id: 'tpl1', name: 'Intro', subject: 'A proposal for [Company Name]', bodyHtml: '<p>Hi [First Name]</p>', createdByUserId: 'u1', updatedAt: '' }, { id: 'tpl2', name: 'Mailer 1 – Discovery', subject: 'Invitation: booth 323', bodyHtml: '<p>One</p>', createdByUserId: 'u1', updatedAt: '' }, { id: 'tpl3', name: 'Mailer 2 – PiatIQ and RotoSight', subject: 'Invitation: booth 323', bodyHtml: '<p>Two</p>', createdByUserId: 'u1', updatedAt: '' }] })
     if (p === '/api/files/excel') return json({ id: 'xls1', fileName: 'Leads.xlsx', sizeBytes: 6000 }, 201)
-    if (p === '/api/campaigns/analyze') return json({ file: { id: 'xls1', fileName: 'Leads.xlsx', sizeBytes: 6000 }, sheets: ['Summary', 'Mailer 1 - Discovery'], sheet: body.sheet ?? 'Mailer 1 - Discovery', onePer: body.onePer ?? 'company', totalRows: 4, companies: [{ companyName: 'Alpha', people: [{ email: 'a@a.example' }], skip: null }, { companyName: 'Bravo', people: [{ email: 'b@b.example' }], skip: null }, { companyName: 'Echo', people: [{ email: 'e@e.example' }], skip: 'Already contacted' }], noAddress: [{ row: 5, companyName: 'Delta', reason: 'No email address' }], duplicates: [], columns: {} })
+    if (p === '/api/campaigns/analyze' && body.sheet === 'Summary') return json({ error: { message: 'No "Company" and "Email" columns were found in the sheet "Summary".' } }, 400)
+    if (p === '/api/campaigns/analyze') return json({ file: { id: 'xls1', fileName: 'Leads.xlsx', sizeBytes: 6000 }, sheets: ['Summary', 'Mailer 1 - Discovery', 'Mailer 2 - PiatIQ'], sheet: body.sheet ?? 'Mailer 1 - Discovery', onePer: body.onePer ?? 'company', totalRows: 4, companies: [{ companyName: 'Alpha', people: [{ email: 'a@a.example' }], skip: null }, { companyName: 'Bravo', people: [{ email: 'b@b.example' }], skip: null }, { companyName: 'Echo', people: [{ email: 'e@e.example' }], skip: 'Already contacted' }], noAddress: [{ row: 5, companyName: 'Delta', reason: 'No email address' }], duplicates: [], columns: {} })
     if (p === '/api/files/attachments') return json({ id: 'att1', fileName: 'Brochure.pdf', sizeBytes: 2048 }, 201)
     if (p === '/api/files/zip/start') return json({ id: 'zip1', chunkBytes: 1024, fileName: body.fileName, sizeBytes: body.sizeBytes }, 201)
     if (/^\/api\/files\/zip\/zip1\/chunk$/.test(p)) {
@@ -202,6 +204,26 @@ describe('a new campaign, step by step', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Next: date and time' }))
     expect(await screen.findByText(/one email per person/)).toBeInTheDocument()
     expect(screen.getAllByText('bharath@whiteplast.example').length).toBeGreaterThan(0)
+  })
+
+  it('several sheets in one campaign: each sheet gets its own email, picked by name; a sheet without addresses cannot be sent', async () => {
+    stub()
+    await toEmailStep()
+    await userEvent.click(screen.getByRole('radio', { name: /Several sheets in one campaign/ }))
+    // "Mailer 1" sheet ↔ "Mailer 1" template, "Mailer 2" sheet ↔ "Mailer 2" template — chosen by their numbers.
+    await waitFor(() => expect(screen.getByLabelText('Email for Mailer 1 - Discovery')).toHaveValue('tpl2'))
+    expect(screen.getByLabelText('Email for Mailer 2 - PiatIQ')).toHaveValue('tpl3')
+    expect(screen.getByRole('checkbox', { name: 'Send sheet Summary' })).toBeDisabled() // no Company / Email columns
+    expect(screen.getByText(/No "Company" and "Email" columns were found in the sheet "Summary"/)).toBeInTheDocument()
+    expect(screen.queryByLabelText('Saved template 1')).toBeNull() // the template boxes of the one-sheet mode are gone
+    await userEvent.selectOptions(screen.getByLabelText('Sender account'), 'acc1')
+    await userEvent.click(screen.getByRole('button', { name: 'Next: review emails' }))
+    await screen.findByText(/will be sent/)
+    const b = posts('/campaigns/review').at(-1)!.body
+    expect(b.sheets).toEqual(['Mailer 1 - Discovery', 'Mailer 2 - PiatIQ'])
+    expect(b.templates).toEqual([{ templateId: 'tpl2' }, { templateId: 'tpl3' }])
+    expect(b.templateOrder).toBeUndefined()
+    expect(b.sheet).toBeUndefined()
   })
 
   it('a template can be written for the campaign; two templates offer in-order or random', async () => {

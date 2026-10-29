@@ -178,9 +178,9 @@ describe('the full workflow', () => {
     expect(csv.status).toBe(200)
     expect(csv.headers.get('content-disposition')).toMatch(/attachment; filename=".*report\.csv"/)
     const lines = csv.text.replace(/^﻿/, '').trim().split('\r\n')
-    expect(lines[0]).toBe('Row,Company,Contact,To,CC,Status,Category,Reason,Template,Subject,Company PDF,Scheduled,Sent,Attempts,Gmail message id,Opens,First opened')
+    expect(lines[0]).toBe('Row,Sheet,Company,Contact,To,CC,Status,Category,Reason,Template,Subject,Company PDF,Scheduled,Sent,Attempts,Gmail message id,Opens,First opened')
     expect(lines).toHaveLength(1 + 7)
-    expect(lines.find((l) => l.startsWith('1,Alpha Industries'))).toMatch(/ann@alpha\.example,abe@alpha\.example; manager@yanthara\.example,sent,,,,A proposal for Alpha Industries,Alpha Industries\.pdf/)
+    expect(lines.find((l) => l.startsWith('1,Sheet1,Alpha Industries'))).toMatch(/ann@alpha\.example,abe@alpha\.example; manager@yanthara\.example,sent,,,,A proposal for Alpha Industries,Alpha Industries\.pdf/)
     expect(lines.find((l) => l.includes('Echo LLC'))).toMatch(/skipped,excluded,"?Already contacted/)
 
     const audit = await prisma.auditEvent.findMany({ where: { campaignId: id } })
