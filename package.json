@@ -1,0 +1,46 @@
+{
+  "name": "yanthara-bulk-email",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Yanthara Bulk Email: Excel recipients, templates, Gmail sender accounts, CC, attachments, review, approval, sending and reports. Standalone.",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/index.js",
+    "db:migrate": "prisma migrate dev",
+    "db:deploy": "prisma migrate deploy",
+    "db:generate": "prisma generate",
+    "user:create": "tsx scripts/create-user.ts",
+    "key:generate": "node -e \"console.log(require('crypto').randomBytes(32).toString('base64'))\"",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@prisma/client": "5.22.0",
+    "bcryptjs": "^3.0.3",
+    "dotenv": "^16.4.5",
+    "exceljs": "^4.4.0",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.4.1",
+    "helmet": "^8.0.0",
+    "jsonwebtoken": "^9.0.2",
+    "nodemailer": "^6.10.1",
+    "sanitize-html": "^2.18.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/jsonwebtoken": "^9.0.7",
+    "@types/node": "^22.9.0",
+    "@types/nodemailer": "^6.4.17",
+    "@types/sanitize-html": "^2.16.2",
+    "prisma": "5.22.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.9"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

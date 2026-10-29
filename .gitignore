@@ -1,0 +1,21 @@
+# Dependencies and build output
+node_modules/
+dist/
+web/dist/
+coverage/
+*.tsbuildinfo
+
+# SECRETS — never commit. .env.example documents every variable by NAME only.
+.env
+.env.*
+!.env.example
+
+# The application's own data: the database, uploaded files, the test-mode outbox,
+# company ZIPs. These hold recipients' addresses and companies' documents.
+data/
+*.db
+*.db-journal
+*.sqlite
+
+# Test scratch
+tests/.tmp/

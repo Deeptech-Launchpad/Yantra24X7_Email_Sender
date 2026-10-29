@@ -1,0 +1,206 @@
+// Yanthara Bulk Email — this application's own database (SQLite file).
+// Nothing here is shared with any other application.
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+/// A person of the sales team who signs in.
+model User {
+  id           String   @id
+  email        String   @unique
+  name         String
+  /// admin | member | viewer
+  role         String
+  passwordHash String
+  /// active | disabled
+  status       String   @default("active")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+/// A Gmail account authorized (OAuth) to send. The refresh token is encrypted (AES-256-GCM).
+model SenderAccount {
+  id                String    @id
+  email             String    @unique
+  displayName       String?
+  refreshTokenEnc   String
+  scopes            String
+  /// connected | needs_reconnect | disconnected
+  status            String
+  statusReason      String?
+  /// HTML signature added under every email from this account (cleaned).
+  signatureHtml     String    @default("")
+  dailyLimit        Int
+  /// Other members may send from it (the person who connected it and admins always may).
+  shared            Boolean   @default(false)
+  connectedByUserId String
+  connectedAt       DateTime
+  lastCheckedAt     DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+}
+
+/// A Google sign-in that has been started and not yet come back. Single use; expires.
+model OAuthState {
+  id           String   @id
+  /// SHA-256 of the state value sent to Google.
+  stateHash    String   @unique
+  userId       String
+  codeVerifier String
+  /// SHA-256 of a nonce kept in an httpOnly cookie of the browser that started the sign-in: only that browser can finish it.
+  browserNonceHash String
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+}
+
+/// A saved email template: subject and HTML body with [First Name] / [Company Name].
+model Template {
+  id              String   @id
+  name            String
+  subject         String
+  bodyHtml        String
+  archived        Boolean  @default(false)
+  createdByUserId String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+/// A file kept on disk under DATA_DIR/files (or DATA_DIR/zips for a company ZIP).
+/// kind: excel | common | company_zip | company_file
+model StoredFile {
+  id              String   @id
+  kind            String
+  campaignId      String?
+  position        Int      @default(0)
+  fileName        String
+  mimeType        String
+  sizeBytes       Int
+  /// SHA-256 of the content; empty while a company ZIP is still uploading.
+  sha256          String
+  createdByUserId String
+  createdAt       DateTime @default(now())
+
+  @@index([campaignId])
+  @@index([kind, campaignId])
+}
+
+model Campaign {
+  id                String    @id
+  name              String
+  /// running | paused | completed | cancelled
+  status            String
+  statusReason      String?
+  /// test | live — the mode the campaign was approved in; it is only ever sent in that mode.
+  sendMode          String
+  senderAccountId   String
+  fromEmail         String
+  fromName          String?
+  /// single | sequential | random
+  templateMode      String
+  /// The templates exactly as approved (JSON).
+  templatesJson     String
+  /// Extra CC addresses on every email (JSON array).
+  ccJson            String
+  copyColleagues    Boolean
+  signatureHtml     String    @default("")
+  intervalMinutes   Int
+  startAt           DateTime
+  timezone          String
+  attachmentCount   Int       @default(0)
+  companyZipName    String?
+  sourceFileName    String?
+  totalRows         Int       @default(0)
+  eligibleCount     Int       @default(0)
+  invalidCount      Int       @default(0)
+  duplicateCount    Int       @default(0)
+  excludedCount     Int       @default(0)
+  createdByUserId   String
+  approvedByUserId  String
+  approvedAt        DateTime
+  completedAt       DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  recipients        Recipient[]
+
+  @@index([status])
+  @@index([senderAccountId, status])
+}
+
+model Recipient {
+  id                String    @id
+  campaignId        String
+  campaign          Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  position          Int
+  companyName       String
+  contactName       String?
+  toEmail           String?
+  ccJson            String    @default("[]")
+  sourceRowsJson    String    @default("[]")
+  subject           String?
+  bodyText          String?
+  bodyHtml          String?
+  /// Which template (1, 2 or 3) this person got.
+  templateNumber    Int?
+  /// This person's own company PDF (StoredFile of kind company_file).
+  companyFileId     String?
+  /// scheduled | sending | sent | failed | unknown | skipped | cancelled
+  status            String
+  /// For a row that is not sent: invalid | duplicate | excluded (shown in the counts).
+  category          String?
+  reason            String?
+  scheduledAt       DateTime?
+  attemptedAt       DateTime?
+  sentAt            DateTime?
+  attempts          Int       @default(0)
+  /// The Message-ID header this app gave the email (used to look it up in Sent).
+  messageIdHeader   String?
+  gmailMessageId    String?
+  gmailThreadId     String?
+  trackingTokenHash String?   @unique
+  trackingEnabled   Boolean   @default(false)
+  openCount         Int       @default(0)
+  firstOpenedAt     DateTime?
+  lastOpenedAt      DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([campaignId, status])
+  @@index([toEmail, status])
+  @@index([status, scheduledAt])
+}
+
+/// Addresses or whole domains that are never emailed.
+model Suppression {
+  id              String   @id
+  /// an address (name@company.com) or a domain (@company.com)
+  value           String   @unique
+  reason          String
+  createdByUserId String
+  createdAt       DateTime @default(now())
+}
+
+/// Who did what, when.
+model AuditEvent {
+  id         String   @id
+  userId     String?
+  campaignId String?
+  action     String
+  summary    String
+  createdAt  DateTime @default(now())
+
+  @@index([campaignId])
+}
+
+/// Makes sure only one sender loop runs at a time.
+model Lease {
+  name      String   @id
+  holder    String
+  expiresAt DateTime
+}
