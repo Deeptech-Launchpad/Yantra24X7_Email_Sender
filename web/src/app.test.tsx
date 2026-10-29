@@ -129,34 +129,37 @@ describe('signing in', () => {
     await userEvent.type(screen.getByLabelText('Password'), 'right-password-1')
     await userEvent.click(screen.getByRole('button', { name: 'Sign in' }))
     expect(await screen.findByText(/TEST MODE — no email is sent/)).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Campaigns' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Bulk email' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Sender' })).toBeInTheDocument()
   })
 })
 
 describe('a new campaign, step by step', () => {
+  // Step 1 with the list read: the summary of the file and the rows that cannot be used.
   const toEmailStep = async () => {
     await signedIn('/campaigns/new')
     await userEvent.upload(screen.getByLabelText('Excel file'), new File(['PK..'], 'Leads.xlsx'))
-    expect(await screen.findByText('With a usable address')).toBeInTheDocument()
+    expect(await screen.findByText(/with a valid email address/)).toBeInTheDocument()
     expect(screen.getByText(/Row 5, Delta: No email address/)).toBeInTheDocument()
-    await userEvent.click(screen.getByRole('button', { name: 'Next: email' }))
-    await screen.findByRole('heading', { name: 'Send from' })
+    expect(screen.getByRole('heading', { name: 'Sender' })).toBeInTheDocument()
   }
 
   it('recipients → email → review → approve: the request carries everything chosen, and nothing starts without the explicit confirmation', async () => {
     stub()
     await toEmailStep()
-    const next = screen.getByRole('button', { name: /Next: review every email/ })
+    const next = screen.getByRole('button', { name: 'Next: review emails' })
     expect(next).toBeDisabled() // no sender, no template yet
     await userEvent.selectOptions(screen.getByLabelText('Sender account'), 'acc1')
     await userEvent.selectOptions(await screen.findByLabelText('Saved template 1'), 'tpl1')
     await userEvent.type(screen.getByLabelText('CC address'), 'manager@yanthara.example{Enter}')
-    await userEvent.upload(screen.getByLabelText('Choose files to attach'), new File(['%PDF'], 'Brochure.pdf', { type: 'application/pdf' }))
-    expect(await screen.findByText('Brochure.pdf')).toBeInTheDocument()
     await userEvent.click(next)
 
-    expect(await screen.findByText('Will be sent')).toBeInTheDocument()
-    const preview = screen.getByLabelText('Email preview')
+    expect(await screen.findByText(/will be sent/)).toBeInTheDocument()
+    // Attachments are added on the review step, below the preview; the review is made again with them.
+    await userEvent.upload(screen.getByLabelText('Choose files to attach'), new File(['%PDF'], 'Brochure.pdf', { type: 'application/pdf' }))
+    expect(await screen.findByText('Brochure.pdf')).toBeInTheDocument()
+    await waitFor(() => expect(posts('/campaigns/review').at(-1)!.body.attachmentIds).toEqual(['att1']))
+    const preview = await screen.findByLabelText('Email preview')
     expect(within(preview).getByText('A proposal for Alpha Industries')).toBeInTheDocument()
     const content = within(preview).getByLabelText('Email content')
     expect(content.innerHTML).toContain('Hi Ann,')
@@ -168,7 +171,7 @@ describe('a new campaign, step by step', () => {
     await userEvent.click(screen.getByRole('checkbox', { name: 'Send to Bravo Ltd' }))
     await waitFor(() => expect(posts('/campaigns/review').at(-1)!.body.excludePositions).toEqual([1]))
 
-    await userEvent.click(screen.getByRole('button', { name: /Next: schedule & approve/ }))
+    await userEvent.click(screen.getByRole('button', { name: 'Next: date and time' }))
     const approve = await screen.findByRole('button', { name: 'Approve and start sending' })
     expect(await screen.findByText(/I reviewed these 1 emails/)).toBeInTheDocument()
     expect(approve).toBeDisabled()
@@ -184,20 +187,19 @@ describe('a new campaign, step by step', () => {
     stub()
     await signedIn('/campaigns/new')
     await userEvent.upload(screen.getByLabelText('Excel file'), new File(['PK..'], 'List.xlsx'))
-    expect(await screen.findByText('With a usable address')).toBeInTheDocument()
+    expect(await screen.findByText(/with a valid email address/)).toBeInTheDocument()
     expect(screen.getByLabelText('Sheet')).toHaveValue('Mailer 1 - Discovery') // the server's choice: not the summary sheet
     await userEvent.click(screen.getByRole('radio', { name: /One email per person/ }))
     await waitFor(() => expect(posts('/campaigns/analyze').at(-1)!.body).toMatchObject({ onePer: 'person', sheet: 'Mailer 1 - Discovery' }))
-    expect(await screen.findByText('People')).toBeInTheDocument()
-    await userEvent.click(screen.getByRole('button', { name: 'Next: email' }))
+    expect(await screen.findByText(/people with a valid email address/)).toBeInTheDocument()
     await userEvent.selectOptions(await screen.findByLabelText('Sender account'), 'acc1')
     await userEvent.selectOptions(await screen.findByLabelText('Saved template 1'), 'tpl1')
     expect(screen.queryByText(/Copy the other contacts of the same company/)).toBeNull() // nobody is copied per person
-    await userEvent.type(screen.getByLabelText(/Replies go to/), 'bharath@whiteplast.example')
-    await userEvent.click(screen.getByRole('button', { name: /Next: review every email/ }))
-    expect(await screen.findByText('Reply-To bharath@whiteplast.example')).toBeInTheDocument()
+    await userEvent.type(screen.getByLabelText('Replies go to'), 'bharath@whiteplast.example')
+    await userEvent.click(screen.getByRole('button', { name: 'Next: review emails' }))
+    expect(await screen.findByText(/Reply-To bharath@whiteplast\.example/)).toBeInTheDocument()
     expect(posts('/campaigns/review').at(-1)!.body).toMatchObject({ sheet: 'Mailer 1 - Discovery', onePer: 'person', replyTo: 'bharath@whiteplast.example' })
-    await userEvent.click(screen.getByRole('button', { name: /Next: schedule & approve/ }))
+    await userEvent.click(screen.getByRole('button', { name: 'Next: date and time' }))
     expect(await screen.findByText(/one email per person/)).toBeInTheDocument()
     expect(screen.getAllByText('bharath@whiteplast.example').length).toBeGreaterThan(0)
   })
@@ -214,8 +216,8 @@ describe('a new campaign, step by step', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Add another template' }))
     await userEvent.selectOptions(screen.getByLabelText('Saved template 2'), 'tpl1')
     await userEvent.click(screen.getByRole('radio', { name: /Random/ }))
-    await userEvent.click(screen.getByRole('button', { name: /Next: review every email/ }))
-    await screen.findByText('Will be sent')
+    await userEvent.click(screen.getByRole('button', { name: 'Next: review emails' }))
+    await screen.findByText(/will be sent/)
     const b = posts('/campaigns/review').at(-1)!.body
     expect(b.templates).toEqual([{ subject: 'Hello [Company Name]', bodyHtml: '<p>Hi [First Name]</p>' }, { templateId: 'tpl1' }])
     expect(b.templateOrder).toBe('random')
@@ -227,15 +229,17 @@ describe('a new campaign, step by step', () => {
     await toEmailStep()
     await userEvent.selectOptions(screen.getByLabelText('Sender account'), 'acc1')
     await userEvent.selectOptions(await screen.findByLabelText('Saved template 1'), 'tpl1')
+    await userEvent.click(screen.getByRole('button', { name: 'Next: review emails' }))
+    await screen.findByText(/will be sent/)
     await userEvent.upload(screen.getByLabelText('Choose the ZIP of company PDFs'), new File([new Uint8Array(3000)], 'pdfs.zip', { type: 'application/zip' }))
-    expect(await screen.findByText('pdfs.zip')).toBeInTheDocument()
+    expect((await screen.findAllByText('pdfs.zip')).length).toBeGreaterThan(0) // the uploaded file, and later the check of it
     expect(calls.filter((c) => c.url.startsWith('/api/files/zip/zip1/chunk')).map((c) => c.url)).toEqual(['/api/files/zip/zip1/chunk?offset=0', '/api/files/zip/zip1/chunk?offset=1024', '/api/files/zip/zip1/chunk?offset=2048'])
-    await userEvent.click(screen.getByRole('button', { name: /Next: review every email/ }))
+    // The ZIP is matched against the companies straight away, before anything is approved.
     expect(await screen.findByText('1 recipient has no usable company PDF.')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Next: schedule & approve/ })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Next: date and time' })).toBeDisabled()
     await userEvent.click(screen.getByRole('checkbox', { name: /Exclude the recipients without a usable PDF/ }))
     await waitFor(() => expect(posts('/campaigns/review').at(-1)!.body).toMatchObject({ companyZipId: 'zip1', excludeUnmatched: true }))
-    await waitFor(() => expect(screen.getByRole('button', { name: /Next: schedule & approve/ })).toBeEnabled())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Next: date and time' })).toBeEnabled())
   })
 
   it('a viewer cannot create campaigns (no link, and the page says so)', async () => {

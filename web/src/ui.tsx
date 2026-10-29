@@ -22,6 +22,34 @@ export function Html({ html, label }: { html: string; label?: string }) {
   return <div className="preview" aria-label={label} dangerouslySetInnerHTML={{ __html: safeHtml(html) }} />
 }
 
+/** A titled block with its actions on the right — the building block of every screen. */
+export function Panel({ title, subtitle, actions, children }: { title?: ReactNode; subtitle?: ReactNode; actions?: ReactNode; children: ReactNode }) {
+  return (
+    <section className="panel">
+      {(title || actions) && (
+        <header className="panel__head">
+          <div className="panel__titles">
+            {title && <h2 className="panel__title">{title}</h2>}
+            {subtitle && <p className="panel__sub">{subtitle}</p>}
+          </div>
+          {actions && <div className="panel__actions">{actions}</div>}
+        </header>
+      )}
+      <div className="panel__body">{children}</div>
+    </section>
+  )
+}
+
+/** A short status word in a coloured pill. */
+export function Chip({ tone = 'neutral', children, title }: { tone?: 'neutral' | 'ok' | 'warn' | 'danger' | 'info' | 'accent'; children: ReactNode; title?: string }) {
+  const cls = { neutral: '', ok: 'ok', warn: 'warn', danger: 'bad', info: 'info', accent: 'brand' }[tone]
+  return (
+    <span className={`badge ${cls}`} title={title}>
+      {children}
+    </span>
+  )
+}
+
 export function Banner({ kind, children }: { kind: 'test' | 'err' | 'ok' | 'warn'; children: ReactNode }) {
   return (
     <div className={`banner ${kind}`} role={kind === 'err' ? 'alert' : 'status'}>

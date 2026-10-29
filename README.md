@@ -13,6 +13,17 @@ as an `.eml` file that opens in any mail program, so the whole flow can be check
 
 ---
 
+## The screens
+
+The layout and the flow follow the Marketing AI Agent's Bulk Email, in this company's orange:
+
+- **Bulk email** (the home page): a **Sender** panel (each sender account, *Authorized*, how much it can still send today, *Check sender*), then the list of bulk emails with their counts.
+- **New bulk email**, three steps: **1. Upload Excel** (sheet, one email per company or per person, the template(s), sender, Reply-To and CC, and the list as read) → **2. Review emails** (every email with the reason for each one not sent, a preview exactly as sent, attachments and the company ZIP below it) → **3. Date, time and start** (times, the explicit approval, *Approve and start sending*).
+- A bulk email's page: counts, every recipient with its status and reason, retry / resolve, pause / resume / cancel, CSV report.
+- Templates, Sender accounts (add with Google sign-in or an app password), Do-not-email list and Users have their own pages.
+
+Not carried over from the Marketing AI Agent: *Send to one person* and the *Skipped companies* page (skipped recipients and their reasons are in the review, on the bulk email's page and in the CSV).
+
 ## What it does
 
 | | |

@@ -1,20 +1,23 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { api, type Account, type FileInfo, type Template } from '../api'
 import { canSend, useSession } from '../App'
-import { Banner, EmailList, formatSize, Html, HtmlEditor, Status, Tile, useAction, useLoad, visibleText } from '../ui'
+import { Banner, Chip, EmailList, formatSize, Html, HtmlEditor, Panel, useAction, useLoad, visibleText } from '../ui'
 import { uploadZipInPieces, type UploadedZip } from '../zipUpload'
 
-// A NEW CAMPAIGN in four steps: recipients (Excel) → email (sender, templates, CC, attachments)
-// → review (every email, with the reason for each one that is not sent) → schedule and approve.
+// A NEW BULK EMAIL in three steps, as in the Marketing AI Agent's Bulk Email:
+//   1. Upload Excel      — the list, the email(s), who it is sent from, replies and CC
+//   2. Review emails     — every email with the reason for each one that is not sent; attachments and the company ZIP
+//   3. Date, time, start — when, how far apart, and the explicit approval
 
-type Step = 'recipients' | 'email' | 'review' | 'approve'
+type Step = 'upload' | 'review' | 'schedule'
 const STEPS: Array<{ key: Step; label: string }> = [
-  { key: 'recipients', label: '1. Recipients' },
-  { key: 'email', label: '2. Email' },
-  { key: 'review', label: '3. Review' },
-  { key: 'approve', label: '4. Schedule & approve' },
+  { key: 'upload', label: '1. Upload Excel' },
+  { key: 'review', label: '2. Review emails' },
+  { key: 'schedule', label: '3. Date, time and start' },
 ]
+const MATCH_LABEL: Record<string, string> = { matched: 'Matched', missing: 'No matching PDF', ambiguous: 'Several files match', invalid: 'File not usable', too_large: 'Too large for one email', excluded: 'Excluded' }
+const MATCH_TONE: Record<string, 'ok' | 'danger' | 'neutral'> = { matched: 'ok', missing: 'danger', ambiguous: 'danger', invalid: 'danger', too_large: 'danger', excluded: 'neutral' }
 
 type OnePer = 'company' | 'person'
 
@@ -25,7 +28,7 @@ interface Analysis {
   sheet: string
   onePer: OnePer
   totalRows: number
-  companies: Array<{ companyName: string; people: Array<{ email: string }>; skip: string | null }>
+  companies: Array<{ key: string; companyName: string; people: Array<{ name: string | null; email: string }>; skip: string | null }>
   noAddress: Array<{ row: number; companyName: string; reason: string }>
   duplicates: Array<{ row: number; companyName: string; email: string }>
   columns: { company: string | null; status: string | null; contacts: Array<{ email: string }> }
@@ -89,7 +92,7 @@ export function NewCampaign() {
   const fileInput = useRef<HTMLInputElement>(null)
   const zipInput = useRef<HTMLInputElement>(null)
 
-  const [step, setStep] = useState<Step>('recipients')
+  const [step, setStep] = useState<Step>('upload')
   const [excel, setExcel] = useState<FileInfo | null>(null)
   const [allowWebmail, setAllowWebmail] = useState(false)
   const [sheet, setSheet] = useState('')
@@ -185,7 +188,7 @@ export function NewCampaign() {
         next = [...next, await api.upload<FileInfo>('/files/attachments', f, f.name)]
         setAttachments(next)
       }
-      invalidate()
+      filesChanged()
     })
     if (fileInput.current) fileInput.current.value = ''
   }
@@ -193,7 +196,7 @@ export function NewCampaign() {
     void act.run('attach', async () => {
       await api.del(`/files/${id}`).catch(() => undefined)
       setAttachments((a) => a.filter((x) => x.id !== id))
-      invalidate()
+      filesChanged()
     })
   const addZip = (f: File | undefined) => {
     if (zipInput.current) zipInput.current.value = ''
@@ -206,7 +209,7 @@ export function NewCampaign() {
         const z = await uploadZipInPieces(f, (sent) => setZipProgress({ sent, total: f.size }))
         if (zip) void api.del(`/files/${zip.id}`).catch(() => undefined)
         setZip(z)
-        invalidate()
+        filesChanged()
       } finally {
         setZipProgress(null)
       }
@@ -217,15 +220,24 @@ export function NewCampaign() {
   const go = (to: Step) => {
     act.setError(null)
     setStep(to)
-    if (to === 'review' || to === 'approve') void loadReview()
+    if (to === 'review' || to === 'schedule') void loadReview()
   }
+  // Files added or removed on the review step: the review is made again with the latest choices (after this render).
+  const [reloadTick, setReloadTick] = useState(0)
+  const filesChanged = () => {
+    invalidate()
+    setReloadTick((t) => t + 1)
+  }
+  useEffect(() => {
+    if (reloadTick > 0 && step === 'review') void loadReview()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reloadTick])
   const preview = review?.rows.find((r) => r.position === previewPos) ?? null
   const intervalOk = /^\d+$/.test(interval) && Number(interval) >= config.minIntervalMinutes && Number(interval) <= 240
-  const stepIndex = STEPS.findIndex((s) => s.key === step)
-
+  
   // Each template box keeps its key, so a body being typed is never reset when another template changes.
   const templateEditor = templates.map((t, i) => (
-        <div key={t.key} className="card" style={{ background: '#fffdfb' }}>
+        <div key={t.key} className="bulk-template-item">
           <div className="row" style={{ justifyContent: 'space-between' }}>
             <strong>{templates.length > 1 ? `Template ${i + 1}` : 'Template'}</strong>
             {templates.length > 1 && (
@@ -310,37 +322,44 @@ export function NewCampaign() {
 
   if (!canSend(user)) return <Banner kind="err">Your role ({user.role}) cannot create campaigns.</Banner>
 
+  const sendableRows = analysis ? analysis.companies.filter((c) => !c.skip && c.people.length > 0) : []
+
   return (
-    <>
-      <div className="topbar">
-        <h1>New campaign</h1>
-        <Link to="/campaigns" className="btn small" style={{ textDecoration: 'none' }}>
-          Back to campaigns
+    <Panel
+      title="New bulk email"
+      subtitle="Upload an Excel list, review the emails, choose when to start — they go one after another."
+      actions={
+        <Link to="/campaigns" className="btn small quiet" style={{ textDecoration: 'none' }}>
+          ← Back
         </Link>
-      </div>
-      <ol className="steps" aria-label="Steps">
-        {STEPS.map((s, i) => (
-          <li key={s.key} className={s.key === step ? 'current' : i < stepIndex ? 'done' : undefined} aria-current={s.key === step ? 'step' : undefined}>
+      }
+    >
+      <ol className="bulk-steps" aria-label="Steps">
+        {STEPS.map((s) => (
+          <li key={s.key} className={s.key === step ? 'is-current' : undefined} aria-current={s.key === step ? 'step' : undefined}>
             {s.label}
           </li>
         ))}
       </ol>
-      {act.error && <Banner kind="err">{act.error}</Banner>}
+      {act.error && (
+        <p className="otr-err" role="alert">
+          {act.error}
+        </p>
+      )}
 
-      {step === 'recipients' && (
-        <div className="card accent">
-          <h2>Upload the recipient list</h2>
+      {step === 'upload' && (
+        <>
           <p className="note">
-            An Excel workbook (.xlsx) with a <strong>Company</strong> column and one or more contact / email columns (e.g. Contact Person 1, Email Id1, Contact Person 2, Email 2 — or Email, First Name, Last Name for a list of
-            people). Up to {formatSize(config.limits.maxExcelBytes)}.
+            Upload the Excel file (.xlsx) with a <strong>Company</strong> column and one or more contact / email columns (Contact Person 1, Email Id1, Contact Person 2, Email 2 — or Email, First Name, Last Name for a list of people).
+            Up to {formatSize(config.limits.maxExcelBytes)}.
           </p>
           <div className="row">
             <input ref={excelInput} type="file" hidden accept=".xlsx" aria-label="Excel file" onChange={(e) => uploadExcel(e.target.files?.[0])} />
-            <button type="button" className="btn primary" disabled={act.busy === 'excel'} onClick={() => excelInput.current?.click()}>
-              {excel ? 'Choose another file' : 'Choose Excel file'}
+            <button type="button" className="btn" disabled={act.busy === 'excel'} onClick={() => excelInput.current?.click()}>
+              {act.busy === 'excel' ? 'Reading…' : excel ? 'Choose another file' : 'Choose Excel file'}
             </button>
             {excel && (
-              <span className="muted">
+              <span className="cell-dim">
                 {excel.fileName} ({formatSize(excel.sizeBytes)})
               </span>
             )}
@@ -368,76 +387,15 @@ export function NewCampaign() {
               <span>One email per person — every row gets its own email, nobody is copied; [First Name] is the First Name column as written</span>
             </label>
           </fieldset>
-          <label className="check">
+          <label className="bulk-test">
             <input type="checkbox" checked={allowWebmail} onChange={(e) => reanalyze({ webmail: e.target.checked })} />
             <span>
               Include personal / webmail addresses (gmail, yahoo …) — <strong>for a test with your own team&rsquo;s addresses</strong>. Leave this off for a real list: only work addresses are used.
             </span>
           </label>
-          {analysis && (
-            <>
-              <div className="tiles">
-                <Tile n={analysis.totalRows} label="Rows with a company" />
-                <Tile n={analysis.companies.length} label={analysis.onePer === 'person' ? 'People' : 'Companies'} />
-                <Tile n={sendable} label="With a usable address" brand />
-                <Tile n={analysis.noAddress.length} label="Rows without a usable address" />
-                <Tile n={analysis.duplicates.length} label="Repeated addresses" />
-                <Tile n={analysis.companies.filter((c) => c.skip).length} label="Skipped by Status" />
-              </div>
-              {analysis.noAddress.length > 0 && (
-                <details>
-                  <summary>Rows that cannot be used ({analysis.noAddress.length})</summary>
-                  <ul className="muted">
-                    {analysis.noAddress.map((r) => (
-                      <li key={r.row}>
-                        Row {r.row}, {r.companyName}: {r.reason}
-                      </li>
-                    ))}
-                  </ul>
-                </details>
-              )}
-            </>
-          )}
-          <div className="row" style={{ marginTop: 16 }}>
-            <button type="button" className="btn primary" disabled={!analysis || sendable === 0} onClick={() => go('email')}>
-              Next: email
-            </button>
-          </div>
-        </div>
-      )}
 
-      {step === 'email' && (
-        <>
-          <div className="card accent">
-            <h2>Send from</h2>
-            {usable.length === 0 ? (
-              <Banner kind="warn">
-                No Gmail account is connected that you may send from. <Link to="/senders">Connect one</Link> first.
-              </Banner>
-            ) : (
-              <label className="field">
-                Sender account
-                <select
-                  aria-label="Sender account"
-                  value={senderId}
-                  onChange={(e) => {
-                    setSenderId(e.target.value)
-                    invalidate()
-                  }}
-                >
-                  <option value="">Choose…</option>
-                  {usable.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.email} — {a.remainingToday} of {a.dailyLimit} left today
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
-          </div>
-
-          <div className="card accent">
-            <h2>Email</h2>
+          <section className="bulk-section" aria-label="Email">
+            <h3>Email</h3>
             <p className="note">
               <strong>[First Name]</strong> and <strong>[Company Name]</strong> are filled for each person from the Excel. Up to {config.limits.maxTemplates} templates per campaign.
             </p>
@@ -468,33 +426,280 @@ export function NewCampaign() {
                 </label>
               </div>
             )}
-          </div>
+          </section>
 
-          <div className="card accent">
-            <h2>Replies and CC</h2>
-            <label className="field">
-              Replies go to (Reply-To; leave empty for the sender&rsquo;s own address)
-              <input type="email" maxLength={254} placeholder="name@company.com" value={replyTo} onChange={(e) => (setReplyTo(e.target.value), invalidate())} />
-            </label>
+          <section className="bulk-section" aria-label="Sender">
+            <h3>Sender</h3>
+            {usable.length === 0 ? (
+              <Banner kind="warn">
+                No Gmail account is connected that you may send from. <Link to="/senders">Connect one</Link> first.
+              </Banner>
+            ) : (
+              <div className="otr-grid">
+                <label>
+                  <span className="field-label">Send from</span>
+                  <select
+                    aria-label="Sender account"
+                    value={senderId}
+                    onChange={(e) => {
+                      setSenderId(e.target.value)
+                      invalidate()
+                    }}
+                  >
+                    <option value="">Choose…</option>
+                    {usable.map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.email} — {a.remainingToday} of {a.dailyLimit} left today
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span className="field-label">Replies go to (Reply-To; empty = the sender&rsquo;s own address)</span>
+                  <input type="email" aria-label="Replies go to" maxLength={254} placeholder="name@company.com" value={replyTo} onChange={(e) => (setReplyTo(e.target.value), invalidate())} />
+                </label>
+              </div>
+            )}
             {onePer === 'company' && (
               <label className="check">
                 <input type="checkbox" checked={copyColleagues} onChange={(e) => (setCopyColleagues(e.target.checked), invalidate())} />
                 Copy the other contacts of the same company (from the Excel)
               </label>
             )}
-            <span className="field">Also copy on every email (up to {config.limits.maxCc})</span>
+            <span className="field-label" style={{ display: 'block', marginTop: 12 }}>
+              CC on every email (optional, up to {config.limits.maxCc})
+            </span>
             <EmailList value={cc} onChange={(v) => (setCc(v), invalidate())} max={config.limits.maxCc} label="CC address" />
-          </div>
+          </section>
 
-          <div className="card accent" aria-label="Attachments">
-            <h2>Attachments</h2>
+          {analysis && (
+            <>
+              <ul className="otr-list">
+                <li>
+                  <strong>{sendableRows.length}</strong> {analysis.onePer === 'person' ? 'people' : 'companies'} with a valid email address · {analysis.companies.filter((c) => c.skip).length} skipped by Status ·{' '}
+                  {analysis.noAddress.length} rows with no usable address · {analysis.duplicates.length} repeated addresses ({analysis.totalRows} rows in the sheet)
+                </li>
+              </ul>
+              {analysis.noAddress.length > 0 && (
+                <details>
+                  <summary>Rows that cannot be used ({analysis.noAddress.length})</summary>
+                  <ul className="muted">
+                    {analysis.noAddress.map((r) => (
+                      <li key={r.row}>
+                        Row {r.row}, {r.companyName}: {r.reason}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+              <div className="otr-scroll" style={{ maxHeight: 320, overflowY: 'auto' }}>
+                <table className="otr-table">
+                  <thead>
+                    <tr>
+                      <th>Company</th>
+                      <th>To</th>
+                      <th>CC</th>
+                      <th />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {analysis.companies
+                      .filter((c) => c.people.length > 0 || c.skip)
+                      .map((c) => (
+                        <tr key={c.key}>
+                          <td>{c.companyName}</td>
+                          <td>
+                            {c.people[0] ? (
+                              <>
+                                {c.people[0].name ?? <span className="cell-dim">no name</span>}
+                                <div className="cell-dim">{c.people[0].email}</div>
+                              </>
+                            ) : (
+                              '—'
+                            )}
+                          </td>
+                          <td className="cell-dim">{c.people.slice(1).map((p) => p.email).join(', ') || '—'}</td>
+                          <td>{c.skip ? <Chip>Skipped — {c.skip}</Chip> : null}</td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+          <div className="row" style={{ marginTop: 'var(--s3)' }}>
+            <button type="button" className="btn primary" disabled={!analysis || sendableRows.length === 0 || !senderId || !templateOk || Boolean(act.busy)} onClick={() => go('review')}>
+              Next: review emails
+            </button>
+          </div>
+        </>
+      )}
+
+      {step === 'review' && (
+        <>
+          {!review ? (
+            <p className="muted">{act.busy === 'review' || act.busy === 'zip' || act.busy === 'attach' ? 'Preparing every email…' : 'The review could not be prepared.'}</p>
+          ) : (
+            <>
+              <p className="note">
+                <strong>{counts!.eligible} emails</strong> will be sent · {counts!.invalid} invalid · {counts!.duplicate} duplicate · {counts!.excluded} excluded{counts!.blocked > 0 ? ` · ${counts!.blocked} blocked` : ''}. Click Preview to
+                read any email exactly as it will be sent.
+              </p>
+              {review.templates.some((t) => t.removed.length > 0) && (
+                <p className="otr-warn">Taken out of the templates for safety: {review.templates.flatMap((t) => t.removed.map((r) => (review.templates.length > 1 ? `template ${t.number}: ${r}` : r))).join('; ')}.</p>
+              )}
+              {review.companyZip && (
+                <section className="bulk-zip-check" aria-label="Company PDF check">
+                  <p className="note">
+                    <strong>{review.companyZip.fileName}</strong> · {review.companyZip.counts.matched} matched to their PDF
+                    {review.companyZip.counts.missing ? ` · ${review.companyZip.counts.missing} with no matching PDF` : ''}
+                    {review.companyZip.counts.ambiguous ? ` · ${review.companyZip.counts.ambiguous} with several matching files` : ''}
+                    {review.companyZip.counts.invalid ? ` · ${review.companyZip.counts.invalid} with a file that cannot be used` : ''}
+                    {review.companyZip.counts.tooLarge ? ` · ${review.companyZip.counts.tooLarge} too large for one email` : ''}
+                    {review.companyZip.counts.unused ? ` · ${review.companyZip.counts.unused} files not used` : ''}
+                  </p>
+                  {review.companyZip.problems.map((p) => (
+                    <p key={p} className="otr-warn">
+                      {p}
+                    </p>
+                  ))}
+                  {review.blockedProblem && (
+                    <p className="otr-err" role="alert">
+                      {review.blockedProblem}
+                    </p>
+                  )}
+                  {(counts!.blocked > 0 || excludeUnmatched) && (
+                    <label className="bulk-test">
+                      <input
+                        type="checkbox"
+                        checked={excludeUnmatched}
+                        disabled={act.busy === 'review'}
+                        onChange={(e) => {
+                          setExcludeUnmatched(e.target.checked)
+                          void loadReview({ excludeUnmatched: e.target.checked })
+                        }}
+                      />
+                      <span>
+                        Exclude the recipients without a usable PDF — <strong>they will not be emailed</strong>. Or upload a corrected ZIP instead.
+                      </span>
+                    </label>
+                  )}
+                </section>
+              )}
+              <div className="otr-scroll" style={{ maxHeight: 360, overflowY: 'auto' }}>
+                <table className="otr-table">
+                  <thead>
+                    <tr>
+                      <th>Send</th>
+                      <th>Company</th>
+                      <th>Person</th>
+                      <th>Template</th>
+                      <th>To</th>
+                      <th>CC</th>
+                      {review.companyZip && (
+                        <>
+                          <th>PDF file</th>
+                          <th>Match</th>
+                        </>
+                      )}
+                      <th />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {review.rows.map((r) => {
+                      const manually = excluded.includes(r.position)
+                      return (
+                        <tr key={r.position} aria-selected={r.position === previewPos}>
+                          <td>
+                            {(r.status === 'ready' || manually) && (
+                              <input
+                                type="checkbox"
+                                aria-label={`Send to ${r.companyName}`}
+                                checked={!manually}
+                                disabled={act.busy === 'review'}
+                                onChange={() => {
+                                  const next = manually ? excluded.filter((x) => x !== r.position) : [...excluded, r.position]
+                                  setExcluded(next)
+                                  void loadReview({ excludePositions: next })
+                                }}
+                              />
+                            )}
+                          </td>
+                          <td>{r.companyName}</td>
+                          <td>
+                            {r.contactName ?? '—'}
+                            {r.status === 'ready' && r.note && <div className="cell-dim">{r.note}</div>}
+                          </td>
+                          <td>{r.status === 'ready' ? (review.templates.length > 1 && r.templateNumber ? `Template ${r.templateNumber}` : 'Template') : '—'}</td>
+                          <td>{r.toEmail ?? '—'}</td>
+                          <td className="cell-dim">{r.ccEmails.join(', ') || '—'}</td>
+                          {review.companyZip && (
+                            <>
+                              <td>{r.companyFile?.fileName ?? '—'}</td>
+                              <td>
+                                {r.companyFile ? (
+                                  <Chip tone={MATCH_TONE[r.companyFile.status] ?? 'neutral'} title={r.companyFile.detail ?? undefined}>
+                                    {MATCH_LABEL[r.companyFile.status] ?? r.companyFile.status}
+                                  </Chip>
+                                ) : (
+                                  <span className="cell-dim">—</span>
+                                )}
+                              </td>
+                            </>
+                          )}
+                          <td>
+                            {r.status === 'ready' ? (
+                              <button type="button" className="btn small quiet" onClick={() => setPreviewPos(r.position)}>
+                                Preview<span className="sr-only"> {r.companyName}</span>
+                              </button>
+                            ) : (
+                              <span className={r.status === 'blocked' ? 'otr-err' : 'cell-dim'} style={r.status === 'blocked' ? { padding: 0, border: 0, background: 'none' } : undefined}>
+                                {r.status === 'blocked' ? 'Blocked' : 'Skipped'} — {r.reason}
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              {review.noAddress.length > 0 && <p className="note">Also {review.noAddress.length} rows without a usable address (listed on step 1) are counted as invalid.</p>}
+              {preview && (
+                <article className="bulk-email" aria-label="Email preview">
+                  <p className="cell-dim">
+                    From: {review.sender.email}
+                    {review.replyTo ? ` · Reply-To ${review.replyTo}` : ''}
+                  </p>
+                  <p className="cell-dim">
+                    To: {preview.toEmail}
+                    {preview.ccEmails.length ? ` · CC: ${preview.ccEmails.join(', ')}` : ''}
+                  </p>
+                  <p>
+                    {preview.templateNumber && review.templates.length > 1 && <Chip tone="info">Template {preview.templateNumber}</Chip>}{' '}
+                    <span className="field-label" style={{ display: 'inline', margin: 0 }}>
+                      Subject
+                    </span>{' '}
+                    <strong>{preview.subject}</strong>
+                  </p>
+                  {(review.attachments.length > 0 || preview.companyFile?.fileName) && (
+                    <p className="cell-dim">📎 {[...(preview.companyFile?.fileName ? [preview.companyFile.fileName] : []), ...review.attachments.map((a) => a.fileName)].join(', ')}</p>
+                  )}
+                  <Html html={preview.html ?? ''} label="Email content" />
+                </article>
+              )}
+            </>
+          )}
+
+          <section className="bulk-section" aria-label="Attachments">
+            <h3>Attachments (optional)</h3>
             <p className="note">
-              Files on every email: up to {config.limits.maxCommonFiles}, {formatSize(config.limits.maxFileBytes)} each, {formatSize(config.limits.maxEmailAttachmentBytes)} per email in all. Programs and scripts are blocked. The real
-              files are attached — never links.
+              Files on every email: up to {config.limits.maxCommonFiles}, {formatSize(config.limits.maxFileBytes)} each, {formatSize(config.limits.maxEmailAttachmentBytes)} per email in all. Programs and scripts are blocked. The real files
+              are attached — never links.
             </p>
             {attachments.map((a) => (
               <div key={a.id} className="row">
-                📎 {a.fileName} <span className="muted">({formatSize(a.sizeBytes)})</span>
+                📎 {a.fileName} <span className="cell-dim">({formatSize(a.sizeBytes)})</span>
                 <button type="button" className="btn small quiet" onClick={() => removeFile(a.id)}>
                   Remove<span className="sr-only"> {a.fileName}</span>
                 </button>
@@ -519,7 +724,7 @@ export function NewCampaign() {
             )}
             {zip && (
               <div className="row">
-                📦 {zip.fileName} <span className="muted">({formatSize(zip.sizeBytes)})</span>
+                📦 {zip.fileName} <span className="cell-dim">({formatSize(zip.sizeBytes)})</span>
                 <button
                   type="button"
                   className="btn small quiet"
@@ -528,7 +733,7 @@ export function NewCampaign() {
                       await api.del(`/files/${zip.id}`).catch(() => undefined)
                       setZip(null)
                       setExcludeUnmatched(false)
-                      invalidate()
+                      filesChanged()
                     })
                   }
                 >
@@ -536,238 +741,122 @@ export function NewCampaign() {
                 </button>
               </div>
             )}
-          </div>
-          <div className="row">
-            <button type="button" className="btn" onClick={() => setStep('recipients')}>
+          </section>
+          <div className="row" style={{ marginTop: 'var(--s3)' }}>
+            <button type="button" className="btn quiet" onClick={() => setStep('upload')}>
               Back
             </button>
-            <button type="button" className="btn primary" disabled={!senderId || !templateOk || Boolean(act.busy)} onClick={() => go('review')}>
-              Next: review every email
+            <button type="button" className="btn primary" disabled={!review || counts!.eligible === 0 || counts!.blocked > 0 || Boolean(act.busy)} onClick={() => go('schedule')}>
+              Next: date and time
             </button>
           </div>
         </>
       )}
 
-      {step === 'review' && (
+      {step === 'schedule' && (
         <>
+          <div className="otr-grid">
+            <label>
+              <span className="field-label">Date</span>
+              <input type="date" aria-label="Date" value={startDate} onChange={(e) => (setStartDate(e.target.value), invalidate())} />
+            </label>
+            <label>
+              <span className="field-label">Time, {config.timezone}</span>
+              <input type="time" aria-label="Time" value={startTime} onChange={(e) => (setStartTime(e.target.value), invalidate())} />
+            </label>
+            <label>
+              <span className="field-label">Minutes between emails</span>
+              <input type="number" aria-label="Minutes between emails" min={config.minIntervalMinutes} max={240} value={interval} onChange={(e) => (setIntervalMinutes(e.target.value), invalidate())} />
+            </label>
+            <label>
+              <span className="field-label">Name (optional)</span>
+              <input type="text" aria-label="Name" maxLength={120} value={name} onChange={(e) => setName(e.target.value)} placeholder="For example: November proposals" />
+            </label>
+          </div>
           {!review ? (
-            <p className="muted">{act.busy === 'review' ? 'Preparing every email…' : 'The review could not be prepared.'}</p>
+            <div className="row" style={{ marginTop: 'var(--s3)' }}>
+              <button type="button" className="btn quiet" onClick={() => go('review')}>
+                Back
+              </button>
+              <button type="button" className="btn primary" disabled={!startDate || !startTime || !intervalOk || Boolean(act.busy)} onClick={() => void loadReview()}>
+                {act.busy === 'review' ? 'Working…' : 'Show the sending times'}
+              </button>
+            </div>
           ) : (
             <>
-              <div className="tiles">
-                <Tile n={counts!.eligible} label="Will be sent" brand />
-                <Tile n={counts!.invalid} label="Invalid" />
-                <Tile n={counts!.duplicate} label="Duplicate" />
-                <Tile n={counts!.excluded} label="Excluded" />
-                <Tile n={counts!.blocked} label="Blocked (company PDF)" />
-              </div>
-              {review.templates.some((t) => t.removed.length > 0) && (
-                <Banner kind="warn">Taken out of the templates for safety: {review.templates.flatMap((t) => t.removed.map((r) => (review.templates.length > 1 ? `template ${t.number}: ${r}` : r))).join('; ')}.</Banner>
-              )}
-              {review.companyZip && (
-                <div className="card" aria-label="Company PDF check">
-                  <h3>Company PDFs: {review.companyZip.fileName}</h3>
-                  <p className="muted">
-                    {review.companyZip.counts.matched} matched · {review.companyZip.counts.missing} missing · {review.companyZip.counts.ambiguous} with several files · {review.companyZip.counts.invalid} unusable ·{' '}
-                    {review.companyZip.counts.tooLarge} too large · {review.companyZip.counts.unused} files not used
-                  </p>
-                  {review.companyZip.problems.map((p) => (
-                    <p key={p} className="banner warn">
-                      {p}
-                    </p>
-                  ))}
-                  {review.blockedProblem && <Banner kind="err">{review.blockedProblem}</Banner>}
-                  {(counts!.blocked > 0 || excludeUnmatched) && (
-                    <label className="check">
-                      <input
-                        type="checkbox"
-                        checked={excludeUnmatched}
-                        disabled={act.busy === 'review'}
-                        onChange={(e) => {
-                          setExcludeUnmatched(e.target.checked)
-                          void loadReview({ excludeUnmatched: e.target.checked })
-                        }}
-                      />
-                      <span>
-                        Exclude the recipients without a usable PDF — <strong>they will not be emailed</strong>. Or go back and upload a corrected ZIP.
-                      </span>
-                    </label>
-                  )}
-                </div>
-              )}
-              <div className="grid2" style={{ gridTemplateColumns: '1.3fr 1fr' }}>
-                <div className="card">
-                  <h3>Every recipient</h3>
-                  <div className="scroll">
-                    <table className="data">
-                      <thead>
-                        <tr>
-                          <th>Send</th>
-                          <th>Company / person</th>
-                          <th>To · CC</th>
-                          <th>Status</th>
-                          {review.companyZip && <th>PDF</th>}
+              <ul className="otr-list">
+                <li>
+                  <strong>{review.counts.eligible} emails</strong>, one every {review.schedule.intervalMinutes} minutes, from <strong>{review.schedule.firstLocal}</strong> until <strong>{review.schedule.lastLocal}</strong>.
+                </li>
+                <li>
+                  From: <strong>{review.sender.email}</strong>{' '}
+                  {review.sender.ready ? <Chip tone="ok">Authorized</Chip> : <Chip tone="danger">Not ready</Chip>}
+                  {review.sender.problems.length > 0 && <div className="cell-dim">{review.sender.problems.join(' ')}</div>}
+                </li>
+                {review.schedule.limitNote && <li className="cell-dim">{review.schedule.limitNote}</li>}
+                <li>
+                  Recipients: sheet <strong>{review.sheet}</strong>, {review.onePer === 'person' ? 'one email per person' : 'one email per company'}
+                </li>
+                <li>
+                  Replies go to: <strong>{review.replyTo ?? review.sender.email}</strong>
+                </li>
+                <li>CC: {[...(review.copyColleagues ? ['colleagues from the Excel'] : []), ...review.cc].join(', ') || 'none'}</li>
+                <li>
+                  Templates: {review.templates.map((t) => `${review.templates.length > 1 ? `${t.number}. ` : ''}${t.subject}`).join(' · ')}
+                  {review.templateOrder ? ` (${review.templateOrder === 'random' ? 'at random' : 'in order'})` : ''}
+                </li>
+                {review.attachments.length > 0 && <li>Attachments on every email: {review.attachments.map((a) => `${a.fileName} (${formatSize(a.sizeBytes)})`).join(', ')}</li>}
+                {review.companyZip && <li>Company PDFs from {review.companyZip.fileName}: each email carries only its own company&rsquo;s PDF.</li>}
+                <li className="cell-dim">
+                  Not sent: {review.counts.invalid} invalid · {review.counts.duplicate} duplicate · {review.counts.excluded} excluded.
+                </li>
+                {review.sendMode === 'test' && (
+                  <li>
+                    <Chip tone="accent">TEST MODE</Chip> <span className="cell-dim">nothing is sent; each email is written to the outbox.</span>
+                  </li>
+                )}
+              </ul>
+              <div className="otr-scroll" style={{ maxHeight: 220, overflowY: 'auto' }}>
+                <table className="otr-table">
+                  <tbody>
+                    {review.rows
+                      .filter((r) => r.status === 'ready')
+                      .map((r) => (
+                        <tr key={r.position}>
+                          <td className="cell-dim">{r.scheduledLocal}</td>
+                          <td>{r.companyName}</td>
+                          <td className="cell-dim">{r.toEmail}</td>
                         </tr>
-                      </thead>
-                      <tbody>
-                        {review.rows.map((r) => {
-                          const manually = excluded.includes(r.position)
-                          return (
-                            <tr key={r.position} className={r.position === previewPos ? 'sel' : undefined}>
-                              <td>
-                                {(r.status === 'ready' || manually) && (
-                                  <input
-                                    type="checkbox"
-                                    aria-label={`Send to ${r.companyName}`}
-                                    checked={!manually}
-                                    disabled={act.busy === 'review'}
-                                    onChange={() => {
-                                      const next = manually ? excluded.filter((p) => p !== r.position) : [...excluded, r.position]
-                                      setExcluded(next)
-                                      void loadReview({ excludePositions: next })
-                                    }}
-                                  />
-                                )}
-                              </td>
-                              <td>
-                                <button type="button" className="btn quiet small" style={{ padding: 0, textAlign: 'left' }} disabled={r.status !== 'ready'} onClick={() => setPreviewPos(r.position)}>
-                                  <strong>{r.companyName}</strong>
-                                </button>
-                                <div className="muted">
-                                  {r.contactName ?? '—'}
-                                  {r.templateNumber ? ` · template ${r.templateNumber}` : ''}
-                                </div>
-                                {r.note && <div className="muted">{r.note}</div>}
-                              </td>
-                              <td>
-                                {r.toEmail ?? '—'}
-                                {r.ccEmails.length > 0 && <div className="muted">CC: {r.ccEmails.join(', ')}</div>}
-                              </td>
-                              <td>
-                                <Status value={r.status} />
-                                {r.category && <div className="muted">{r.category}</div>}
-                                {r.reason && <div className="muted">{r.reason}</div>}
-                              </td>
-                              {review.companyZip && <td className="muted">{r.companyFile?.fileName ?? '—'}</td>}
-                            </tr>
-                          )
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                  {review.noAddress.length > 0 && <p className="note">Also {review.noAddress.length} rows without a usable address (shown on step 1) are counted as invalid.</p>}
-                </div>
-                <div className="card" aria-label="Email preview">
-                  <h3>Preview</h3>
-                  {preview ? (
-                    <>
-                      <div className="muted">From {review.sender.email}</div>
-                      {review.replyTo && <div className="muted">Reply-To {review.replyTo}</div>}
-                      <div className="muted">To {preview.toEmail}</div>
-                      {preview.ccEmails.length > 0 && <div className="muted">CC {preview.ccEmails.join(', ')}</div>}
-                      <p>
-                        <strong>{preview.subject}</strong>
-                      </p>
-                      {(review.attachments.length > 0 || preview.companyFile?.fileName) && (
-                        <p className="muted">📎 {[...(preview.companyFile?.fileName ? [preview.companyFile.fileName] : []), ...review.attachments.map((a) => a.fileName)].join(', ')}</p>
-                      )}
-                      <Html html={preview.html ?? ''} label="Email content" />
-                    </>
-                  ) : (
-                    <p className="muted">Choose a recipient to see their email exactly as it will be sent.</p>
-                  )}
-                </div>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+              <label className="otr-check">
+                <input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} />
+                <span>I reviewed these {review.counts.eligible} emails and approve sending them at these times.</span>
+              </label>
+              <div className="row" style={{ marginTop: 'var(--s3)' }}>
+                <button type="button" className="btn quiet" onClick={() => go('review')}>
+                  Back
+                </button>
+                <button
+                  type="button"
+                  className="btn primary"
+                  disabled={!confirmed || !intervalOk || (!review.sender.ready && review.sender.problems.some((p) => !/daily limit/i.test(p))) || review.counts.eligible === 0 || review.counts.blocked > 0 || Boolean(act.busy)}
+                  onClick={() =>
+                    void act.run('start', async () => {
+                      const r = await api.post<{ campaignId: string }>('/campaigns/start', { ...setup(), confirm: confirmed, reviewFingerprint: review.fingerprint })
+                      navigate(`/campaigns/${r.campaignId}`)
+                    })
+                  }
+                >
+                  {act.busy === 'start' ? 'Starting…' : 'Approve and start sending'}
+                </button>
               </div>
             </>
           )}
-          <div className="row">
-            <button type="button" className="btn" onClick={() => setStep('email')}>
-              Back
-            </button>
-            <button type="button" className="btn primary" disabled={!review || counts!.eligible === 0 || counts!.blocked > 0 || Boolean(act.busy)} onClick={() => go('approve')}>
-              Next: schedule & approve
-            </button>
-          </div>
         </>
       )}
-
-      {step === 'approve' && (
-        <div className="card accent">
-          <h2>Schedule and approve</h2>
-          <div className="grid3">
-            <label className="field">
-              Date
-              <input type="date" value={startDate} onChange={(e) => (setStartDate(e.target.value), invalidate())} />
-            </label>
-            <label className="field">
-              Time ({config.timezone})
-              <input type="time" value={startTime} onChange={(e) => (setStartTime(e.target.value), invalidate())} />
-            </label>
-            <label className="field">
-              Minutes between emails
-              <input type="number" min={config.minIntervalMinutes} max={240} value={interval} onChange={(e) => (setIntervalMinutes(e.target.value), invalidate())} />
-            </label>
-          </div>
-          <label className="field">
-            Campaign name (optional)
-            <input type="text" maxLength={120} value={name} onChange={(e) => setName(e.target.value)} placeholder="For example: November proposals" />
-          </label>
-          <button type="button" className="btn small" disabled={!intervalOk || Boolean(act.busy)} onClick={() => void loadReview()}>
-            Update the times
-          </button>
-          {review && (
-            <ul style={{ lineHeight: 1.7 }}>
-              <li>
-                <strong>{review.counts.eligible} emails</strong>, one every {review.schedule.intervalMinutes} minutes, from <strong>{review.schedule.firstLocal}</strong> until <strong>{review.schedule.lastLocal}</strong>.
-              </li>
-              <li>
-                From <strong>{review.sender.email}</strong>{' '}
-                {review.sender.ready ? <span className="badge ok">ready</span> : <span className="badge bad">not ready</span>}
-                {review.sender.problems.length > 0 && <div className="muted">{review.sender.problems.join(' ')}</div>}
-              </li>
-              {review.schedule.limitNote && <li className="muted">{review.schedule.limitNote}</li>}
-              <li>
-                Recipients: sheet <strong>{review.sheet}</strong>, {review.onePer === 'person' ? 'one email per person' : 'one email per company'}
-              </li>
-              <li>Replies go to: <strong>{review.replyTo ?? review.sender.email}</strong></li>
-              <li>CC: {[...(review.copyColleagues ? ['colleagues from the Excel'] : []), ...review.cc].join(', ') || 'none'}</li>
-              <li>Templates: {review.templates.map((t) => `${review.templates.length > 1 ? `${t.number}. ` : ''}${t.subject}`).join(' · ')}{review.templateOrder ? ` (${review.templateOrder === 'random' ? 'at random' : 'in order'})` : ''}</li>
-              {review.attachments.length > 0 && <li>Attachments on every email: {review.attachments.map((a) => `${a.fileName} (${formatSize(a.sizeBytes)})`).join(', ')}</li>}
-              {review.companyZip && <li>Company PDFs from {review.companyZip.fileName}: each email carries only its own company&rsquo;s PDF.</li>}
-              <li className="muted">
-                Not sent: {review.counts.invalid} invalid · {review.counts.duplicate} duplicate · {review.counts.excluded} excluded.
-              </li>
-              {review.sendMode === 'test' && (
-                <li>
-                  <span className="badge brand">TEST MODE</span> nothing is sent; each email is written to the outbox.
-                </li>
-              )}
-            </ul>
-          )}
-          <label className="check">
-            <input type="checkbox" checked={confirmed} disabled={!review} onChange={(e) => setConfirmed(e.target.checked)} />
-            <span>I reviewed these {review?.counts.eligible ?? 0} emails and approve sending them at these times.</span>
-          </label>
-          <div className="row">
-            <button type="button" className="btn" onClick={() => setStep('review')}>
-              Back
-            </button>
-            <button
-              type="button"
-              className="btn primary"
-              disabled={!review || !confirmed || !intervalOk || !review.sender.ready && review.sender.problems.some((p) => !/daily limit/i.test(p)) || review.counts.eligible === 0 || review.counts.blocked > 0 || Boolean(act.busy)}
-              onClick={() =>
-                void act.run('start', async () => {
-                  const r = await api.post<{ campaignId: string }>('/campaigns/start', { ...setup(), confirm: confirmed, reviewFingerprint: review!.fingerprint })
-                  navigate(`/campaigns/${r.campaignId}`)
-                })
-              }
-            >
-              {act.busy === 'start' ? 'Starting…' : 'Approve and start sending'}
-            </button>
-          </div>
-        </div>
-      )}
-    </>
+    </Panel>
   )
 }

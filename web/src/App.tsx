@@ -33,11 +33,15 @@ function Layout({ children }: { children: ReactNode }) {
           <span className="brand-mark" aria-hidden>
             {config.companyName.slice(0, 1).toUpperCase()}
           </span>
-          <span>{config.companyName} Bulk Email</span>
+          <span>
+            {config.companyName}
+            <span className="brand-sub">Bulk email</span>
+          </span>
         </div>
         <nav className="nav" aria-label="Main">
-          <NavLink to="/campaigns">Campaigns</NavLink>
-          {canSend(user) && <NavLink to="/campaigns/new">New campaign</NavLink>}
+          <NavLink to="/campaigns" end={false}>
+            Bulk email
+          </NavLink>
           <NavLink to="/templates">Templates</NavLink>
           <NavLink to="/senders">Sender accounts</NavLink>
           <NavLink to="/do-not-email">Do-not-email list</NavLink>
