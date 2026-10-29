@@ -20,7 +20,7 @@ const Env = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(4300),
   APP_BASE_URL: z.string().url().default('http://localhost:4300'),
-  COMPANY_NAME: z.string().min(1).max(80).default('Yanthara'),
+  COMPANY_NAME: z.string().min(1).max(80).default('Yantra 24x7'),
 
   DATABASE_URL: z.string().min(1).default('file:../data/yanthara.db'),
   DATA_DIR: z.string().min(1).default('./data'),
@@ -33,6 +33,10 @@ const Env = z.object({
   GOOGLE_CLIENT_SECRET: z.string().default(''),
   GOOGLE_OAUTH_REDIRECT_URL: z.string().default(''),
   GMAIL_READONLY_CHECK: bool,
+  // Gmail's mail server, for accounts that send with an app password.
+  SMTP_HOST: z.string().min(1).default('smtp.gmail.com'),
+  SMTP_PORT: z.coerce.number().int().positive().default(465),
+  SMTP_SECURE: bool.default('true'),
 
   SEND_MODE: z.enum(['test', 'live']).default('test'),
   APP_TIMEZONE: z.string().default('Asia/Kolkata'),

@@ -25,7 +25,7 @@ const CONFIG = {
   readonlyCheck: false,
   limits: { maxCommonFiles: 5, maxFileBytes: 10485760, maxEmailAttachmentBytes: 18874368, maxZipBytes: 1073741824, maxExcelBytes: 5242880, maxCc: 10, maxTemplates: 3 },
 }
-const ACCOUNT = { id: 'acc1', email: 'sales.one@yanthara.example', displayName: 'Sam', status: 'connected', statusReason: null, signatureHtml: '', dailyLimit: 400, sentLast24h: 3, remainingToday: 397, shared: false, connectedByUserId: 'u1', usable: true, canSend: true, canCheckSent: false }
+const ACCOUNT = { id: 'acc1', email: 'sales.one@yanthara.example', displayName: 'Sam', authType: 'oauth', status: 'connected', statusReason: null, signatureHtml: '', dailyLimit: 400, sentLast24h: 3, remainingToday: 397, shared: false, connectedByUserId: 'u1', usable: true, canSend: true, canCheckSent: false }
 const ROWS: any[] = [
   { position: 0, companyName: 'Alpha Industries', contactName: 'Ann Lee', toEmail: 'ann@alpha.example', ccEmails: ['abe@alpha.example'], status: 'ready', category: null, reason: null, subject: 'A proposal for Alpha Industries', html: '<div><p>Hi Ann,</p><script>alert(1)</script><img src="x" onerror="alert(1)"></div>', templateNumber: null, companyFile: null, note: null, scheduledLocal: 'now' },
   { position: 1, companyName: 'Bravo Ltd', contactName: 'Bob Ray', toEmail: 'bob@bravo.example', ccEmails: [], status: 'ready', category: null, reason: null, subject: 'A proposal for Bravo Ltd', html: '<p>Hi Bob,</p>', templateNumber: null, companyFile: null, note: null, scheduledLocal: 'later' },
@@ -45,6 +45,9 @@ function reviewFor(body: any, opts: { blocked?: boolean }) {
     templates: [{ number: 1, subject: 'A proposal for [Company Name]', removed: [] }],
     templateOrder: null,
     cc: body.cc ?? [],
+    replyTo: body.replyTo ?? null,
+    onePer: body.onePer ?? 'company',
+    sheet: 'Sheet1',
     copyColleagues: body.copyColleagues,
     sender: { id: 'acc1', email: ACCOUNT.email, ready: true, problems: [], remainingToday: 397, dailyLimit: 400 },
     sendMode: 'test',
@@ -71,9 +74,10 @@ function stub(opts: { role?: string; blocked?: boolean; campaign?: any } = {}) {
     if (p === '/api/campaigns' && method === 'GET') return json({ campaigns: [] })
     if (p === '/api/senders' && method === 'GET') return json({ accounts: [ACCOUNT], googleConfigured: true })
     if (p === '/api/senders/connect') return json({ url: 'https://accounts.google.com/o/oauth2/v2/auth?state=abc' })
+    if (p === '/api/senders/app-password') return json({ ...ACCOUNT, id: 'acc2', email: body.email, authType: 'app_password', displayName: body.displayName ?? null }, 201)
     if (p === '/api/templates' && method === 'GET') return json({ templates: [{ id: 'tpl1', name: 'Intro', subject: 'A proposal for [Company Name]', bodyHtml: '<p>Hi [First Name]</p>', createdByUserId: 'u1', updatedAt: '' }] })
     if (p === '/api/files/excel') return json({ id: 'xls1', fileName: 'Leads.xlsx', sizeBytes: 6000 }, 201)
-    if (p === '/api/campaigns/analyze') return json({ file: { id: 'xls1', fileName: 'Leads.xlsx', sizeBytes: 6000 }, totalRows: 4, companies: [{ companyName: 'Alpha', people: [{ email: 'a@a.example' }], skip: null }, { companyName: 'Bravo', people: [{ email: 'b@b.example' }], skip: null }, { companyName: 'Echo', people: [{ email: 'e@e.example' }], skip: 'Already contacted' }], noAddress: [{ row: 5, companyName: 'Delta', reason: 'No email address' }], duplicates: [], columns: {} })
+    if (p === '/api/campaigns/analyze') return json({ file: { id: 'xls1', fileName: 'Leads.xlsx', sizeBytes: 6000 }, sheets: ['Summary', 'Mailer 1 - Discovery'], sheet: body.sheet ?? 'Mailer 1 - Discovery', onePer: body.onePer ?? 'company', totalRows: 4, companies: [{ companyName: 'Alpha', people: [{ email: 'a@a.example' }], skip: null }, { companyName: 'Bravo', people: [{ email: 'b@b.example' }], skip: null }, { companyName: 'Echo', people: [{ email: 'e@e.example' }], skip: 'Already contacted' }], noAddress: [{ row: 5, companyName: 'Delta', reason: 'No email address' }], duplicates: [], columns: {} })
     if (p === '/api/files/attachments') return json({ id: 'att1', fileName: 'Brochure.pdf', sizeBytes: 2048 }, 201)
     if (p === '/api/files/zip/start') return json({ id: 'zip1', chunkBytes: 1024, fileName: body.fileName, sizeBytes: body.sizeBytes }, 201)
     if (/^\/api\/files\/zip\/zip1\/chunk$/.test(p)) {
@@ -90,7 +94,7 @@ function stub(opts: { role?: string; blocked?: boolean; campaign?: any } = {}) {
 }
 
 const CAMPAIGN = {
-  campaign: { id: 'c1', name: 'Leads — Nov 3', status: 'completed', statusReason: null, sendMode: 'test', createdByUserId: 'u1', fromEmail: ACCOUNT.email, cc: ['manager@yanthara.example'], copyColleagues: true, intervalMinutes: 2, startLocal: 'Tue, Nov 3, 2026, 10:00 AM', sourceFileName: 'Leads.xlsx', companyZipName: null, templates: [{ number: 1, subject: 'A proposal for [Company Name]' }], review: { totalRows: 3, eligible: 2, invalid: 0, duplicate: 0, excluded: 1 } },
+  campaign: { id: 'c1', name: 'Leads — Nov 3', status: 'completed', statusReason: null, sendMode: 'test', createdByUserId: 'u1', fromEmail: ACCOUNT.email, replyTo: null, recipientMode: 'company', sheetName: 'Sheet1', cc: ['manager@yanthara.example'], copyColleagues: true, intervalMinutes: 2, startLocal: 'Tue, Nov 3, 2026, 10:00 AM', sourceFileName: 'Leads.xlsx', companyZipName: null, templates: [{ number: 1, subject: 'A proposal for [Company Name]' }], review: { totalRows: 3, eligible: 2, invalid: 0, duplicate: 0, excluded: 1 } },
   counts: { scheduled: 0, sending: 0, sent: 1, failed: 1, unknown: 1, skipped: 1, cancelled: 0, skippedInvalid: 0, skippedDuplicate: 0, skippedExcluded: 1, total: 4, opens: { tracked: 0, opened: 0 } },
   attachments: [{ id: 'att1', fileName: 'Brochure.pdf', sizeBytes: 2048 }],
   recipients: [
@@ -176,6 +180,28 @@ describe('a new campaign, step by step', () => {
     expect(await screen.findByRole('heading', { name: 'Leads — Nov 3 TEST' })).toBeInTheDocument() // the campaign page, marked as approved in test mode
   })
 
+  it('a list of people: the sheet, one email per person and a reply-to address are part of the review and the approval', async () => {
+    stub()
+    await signedIn('/campaigns/new')
+    await userEvent.upload(screen.getByLabelText('Excel file'), new File(['PK..'], 'List.xlsx'))
+    expect(await screen.findByText('With a usable address')).toBeInTheDocument()
+    expect(screen.getByLabelText('Sheet')).toHaveValue('Mailer 1 - Discovery') // the server's choice: not the summary sheet
+    await userEvent.click(screen.getByRole('radio', { name: /One email per person/ }))
+    await waitFor(() => expect(posts('/campaigns/analyze').at(-1)!.body).toMatchObject({ onePer: 'person', sheet: 'Mailer 1 - Discovery' }))
+    expect(await screen.findByText('People')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Next: email' }))
+    await userEvent.selectOptions(await screen.findByLabelText('Sender account'), 'acc1')
+    await userEvent.selectOptions(await screen.findByLabelText('Saved template 1'), 'tpl1')
+    expect(screen.queryByText(/Copy the other contacts of the same company/)).toBeNull() // nobody is copied per person
+    await userEvent.type(screen.getByLabelText(/Replies go to/), 'bharath@whiteplast.example')
+    await userEvent.click(screen.getByRole('button', { name: /Next: review every email/ }))
+    expect(await screen.findByText('Reply-To bharath@whiteplast.example')).toBeInTheDocument()
+    expect(posts('/campaigns/review').at(-1)!.body).toMatchObject({ sheet: 'Mailer 1 - Discovery', onePer: 'person', replyTo: 'bharath@whiteplast.example' })
+    await userEvent.click(screen.getByRole('button', { name: /Next: schedule & approve/ }))
+    expect(await screen.findByText(/one email per person/)).toBeInTheDocument()
+    expect(screen.getAllByText('bharath@whiteplast.example').length).toBeGreaterThan(0)
+  })
+
   it('a template can be written for the campaign; two templates offer in-order or random', async () => {
     stub()
     await toEmailStep()
@@ -248,5 +274,22 @@ describe('sender accounts', () => {
     expect(screen.getByRole('heading', { name: 'sales.one@yanthara.example' })).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Connect Gmail' }))
     await waitFor(() => expect(assign).toHaveBeenCalledWith('https://accounts.google.com/o/oauth2/v2/auth?state=abc'))
+  })
+
+  it('an account can be added with an app password: typed in a hidden field, sent once, never shown', async () => {
+    stub()
+    await signedIn('/senders')
+    await userEvent.click(await screen.findByRole('button', { name: 'Add with app password' }))
+    const pw = screen.getByLabelText('App password')
+    expect(pw).toHaveAttribute('type', 'password')
+    await userEvent.type(screen.getByLabelText('Gmail address'), 'sales.team@gmail.example')
+    await userEvent.type(pw, 'abcd efgh ijkl mnop')
+    await userEvent.type(screen.getByLabelText(/Sender name/), 'Sales Team')
+    await userEvent.click(screen.getByRole('button', { name: 'Check and add' }))
+    await waitFor(() => expect(posts('/senders/app-password')).toHaveLength(1))
+    expect(posts('/senders/app-password')[0]!.body).toEqual({ email: 'sales.team@gmail.example', appPassword: 'abcd efgh ijkl mnop', displayName: 'Sales Team' })
+    expect(await screen.findByText(/sales\.team@gmail\.example can now send with its app password/)).toBeInTheDocument()
+    expect(screen.queryByLabelText('App password')).toBeNull() // the form is gone, and with it the password
+    expect(document.body.textContent).not.toContain('abcd efgh')
   })
 })

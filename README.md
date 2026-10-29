@@ -1,4 +1,4 @@
-# Yanthara Bulk Email
+# Yantra 24x7 Bulk Email
 
 A standalone application for a sales team to send personalised bulk email from their own Gmail accounts:
 upload an Excel list → choose a template → add CC and attachments (including one PDF per company from a ZIP)
@@ -17,11 +17,11 @@ as an `.eml` file that opens in any mail program, so the whole flow can be check
 
 | | |
 |---|---|
-| **Recipients** | Upload an `.xlsx`. Columns are found by their headings (Company Name, Contact Person 1, Email Id1, Contact Person 2, Email 2, Status …). One email per company: the first named person receives it, colleagues are copied. Only work addresses (webmail is off unless ticked for a test). Rows without a usable address are listed with the reason. |
+| **Recipients** | Upload an `.xlsx`. Columns are found by their headings (Company Name, Contact Person 1, Email Id1, Contact Person 2, Email 2, Status …). A workbook with several sheets: choose the sheet (by default the first with an email heading, so a summary sheet is skipped). **One email per company** (the first named person receives it, colleagues are copied) or **one email per person** (every row its own email, nobody copied; `[First Name]` is the *First Name* column exactly as written). Up to 5,000 recipients. Only work addresses (webmail is off unless ticked). Rows without a usable address are listed with the reason. |
 | **Counts** | Eligible, invalid (no address / no name to greet), duplicate (an address already in the campaign), excluded (Status column, do-not-email list, already queued, outcome unknown, same email already sent, excluded by hand), blocked (company PDF problem). |
 | **Templates** | Saved templates (subject + formatted body; paste from Gmail, Outlook or Word), or one written for the campaign. `[First Name]` and `[Company Name]` are filled per person. Up to 3 templates per campaign, in order or at random. Preview before sending. |
-| **Sender accounts** | Each member connects their own Gmail / Google Workspace account with Google's sign-in (send-only permission). Shown with status and daily usage; check readiness; signature; daily limit; disconnect / reconnect. Admins can share an account with the team. |
-| **CC** | The company's other contacts (on/off) plus up to 10 addresses on every email. Do-not-email addresses are left out of the copy. |
+| **Sender accounts** | Each member connects their own Gmail / Google Workspace account with Google's sign-in (send-only permission), **or adds it with a Gmail app password** (sent through Gmail's mail server; checked by signing in, stored encrypted, never shown again). Shown with status and daily usage; check readiness; signature; daily limit; disconnect / reconnect. Admins can share an account with the team. |
+| **Replies and CC** | An optional Reply-To address for the campaign (replies — and List-Unsubscribe — go there instead of the sender). The company's other contacts (on/off) plus up to 10 addresses on every email. Do-not-email addresses are left out of the copy. |
 | **Attachments** | Up to 5 files on every email (10 MB each, 18 MB per email in all; programs/scripts blocked) and/or one ZIP (up to 1 GB, uploaded in pieces) of PDFs named after the companies: each recipient gets only their own company's PDF. Missing, ambiguous, damaged or too-large files block the campaign until fixed or explicitly excluded. Real files are attached — never links. |
 | **Approval** | A final summary (recipients, sender, CC, templates, attachments, times) and an explicit confirmation. Start re-checks everything and is refused if anything changed since the review (it compares a fingerprint of every reviewed email). |
 | **Sending** | One campaign at a time per account, one email at a time, at least N minutes apart, within the account's daily limit. Each email is claimed before it is sent. |
@@ -49,8 +49,8 @@ yanthara bulk email process project/
 │   ├── bulk/                    excel, extract, content, schedule, files, companyZip, review,
 │   │                            campaigns, dispatcher, senders, templates, suppression, tracking
 │   └── routes/api.ts            every API route, validated
-├── tests/                       84 tests: the whole workflow through the API against a fake Google
-└── web/                         the screens (React + Vite), orange and white; 10 tests
+├── tests/                       94 tests: the whole workflow through the API against a fake Google and a fake Gmail mail server
+└── web/                         the screens (React + Vite), orange and white; 12 tests
 ```
 
 ---
@@ -92,6 +92,7 @@ Names only — never commit `.env`. Every value is this application's own.
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | for Gmail | the OAuth client (below) |
 | `GOOGLE_OAUTH_REDIRECT_URL` | | default `APP_BASE_URL/api/oauth/google/callback` |
 | `GMAIL_READONLY_CHECK` | | `true` also asks for read access, to look up emails with an unknown outcome in Sent (a restricted Google scope — see below) |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_SECURE` | | Gmail's mail server, for accounts added with an app password (defaults `smtp.gmail.com`, `465`, `true`) |
 | `SEND_MODE` | | `test` (default, nothing is sent) or `live` |
 | `APP_TIMEZONE` | | default `Asia/Kolkata` |
 | `MIN_INTERVAL_MINUTES` | | smallest gap between two emails of a campaign (default 1) |
@@ -122,6 +123,15 @@ Done once, by someone with access to the company's Google account (ideally a Goo
 7. To remove access: **Disconnect** (the permission is revoked at Google and erased here), or the person removes it at <https://myaccount.google.com/permissions> — the app then shows *reconnect needed*.
 
 Nothing of the Marketing AI Agent's company is used: its own Google project, client, tokens and accounts stay where they are.
+
+### Or: an account with a Gmail app password
+
+No Google Cloud project is needed. In the Google account that will send: turn on **2-Step Verification**, then
+**Security → App passwords** → create one (Google shows 16 letters). In the app: *Sender accounts* → **Add with
+app password** → the Gmail address, the 16 letters, a sender name. The app signs in to Gmail's mail server to check it
+(no email is sent) and keeps it encrypted. It is not the account's normal password; removing it in the Google account
+stops this app at once (the account then shows *needs reconnect* → **New app password**). An app password cannot look
+in Sent, so an email with an unknown outcome is checked in Gmail by a person.
 
 ### Going live
 

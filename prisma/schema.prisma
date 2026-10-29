@@ -25,11 +25,15 @@ model User {
   updatedAt    DateTime @updatedAt
 }
 
-/// A Gmail account authorized (OAuth) to send. The refresh token is encrypted (AES-256-GCM).
+/// A Gmail account allowed to send: signed in with Google (OAuth), or with a Gmail app password (SMTP).
+/// Its secret — the refresh token, or the app password — is encrypted (AES-256-GCM).
 model SenderAccount {
   id                String    @id
   email             String    @unique
   displayName       String?
+  /// oauth | app_password
+  authType          String    @default("oauth")
+  /// The encrypted refresh token (oauth) or app password (app_password).
   refreshTokenEnc   String
   scopes            String
   /// connected | needs_reconnect | disconnected
@@ -108,6 +112,12 @@ model Campaign {
   templatesJson     String
   /// Extra CC addresses on every email (JSON array).
   ccJson            String
+  /// Where replies go (Reply-To), when not to the sender.
+  replyTo           String?
+  /// company (one email per company, colleagues copied) | person (one email per person)
+  recipientMode     String    @default("company")
+  /// The worksheet of the Excel file the recipients came from.
+  sheetName         String?
   copyColleagues    Boolean
   signatureHtml     String    @default("")
   intervalMinutes   Int

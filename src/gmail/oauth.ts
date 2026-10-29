@@ -129,11 +129,13 @@ export async function finishConnect(input: { code?: string; state?: string; erro
   const existing = await prisma.senderAccount.findUnique({ where: { email } })
   if (!json.refresh_token && !existing?.refreshTokenEnc) throw new BadRequestError('Google did not give a lasting permission. Remove this app at myaccount.google.com/permissions and connect again.')
 
+  // An account that used an app password until now keeps nothing of it: a refresh token is required.
+  if (!json.refresh_token && existing?.authType !== 'oauth') throw new BadRequestError('Google did not give a lasting permission. Remove this app at myaccount.google.com/permissions and connect again.')
   const tokenEnc = json.refresh_token ? seal(json.refresh_token) : existing!.refreshTokenEnc
   const account = existing
     ? await prisma.senderAccount.update({
         where: { id: existing.id },
-        data: { refreshTokenEnc: tokenEnc, scopes: granted.join(' '), status: 'connected', statusReason: null, connectedByUserId: existing.status === 'disconnected' ? user.id : existing.connectedByUserId, connectedAt: now, lastCheckedAt: now },
+        data: { authType: 'oauth', refreshTokenEnc: tokenEnc, scopes: granted.join(' '), status: 'connected', statusReason: null, connectedByUserId: existing.status === 'disconnected' ? user.id : existing.connectedByUserId, connectedAt: now, lastCheckedAt: now },
       })
     : await prisma.senderAccount.create({
         data: {
@@ -169,6 +171,8 @@ export async function accessToken(accountId: string, now = Date.now()): Promise<
   if (cached && cached.expiresAt > now) return cached.token
   const acc = await prisma.senderAccount.findUnique({ where: { id: accountId } })
   if (!acc || acc.status === 'disconnected' || !acc.refreshTokenEnc) throw new AccountAuthError('This sender account is not connected.')
+  // An app password is never sent to Google's sign-in service.
+  if (acc.authType !== 'oauth') throw new AccountAuthError('This account sends with an app password, not with a Google sign-in.')
   let refresh: string
   try {
     refresh = open(acc.refreshTokenEnc)
@@ -198,7 +202,7 @@ export async function disconnect(user: Principal, accountId: string) {
   if (user.role !== 'admin' && acc.connectedByUserId !== user.id) throw new ForbiddenError('Only the person who connected this account, or an admin, can disconnect it.')
   const active = await prisma.campaign.count({ where: { senderAccountId: accountId, status: { in: ['running', 'paused'] } } })
   if (active) throw new ConflictError('A campaign is still using this account. Cancel or finish it first.')
-  if (acc.refreshTokenEnc) {
+  if (acc.refreshTokenEnc && acc.authType === 'oauth') {
     try {
       const token = open(acc.refreshTokenEnc)
       await fetch(`${env.GOOGLE_REVOKE_URL}?${new URLSearchParams({ token })}`, { method: 'POST', signal: AbortSignal.timeout(10_000) })

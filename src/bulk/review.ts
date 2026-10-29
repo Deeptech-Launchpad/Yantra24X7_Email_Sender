@@ -6,7 +6,7 @@ import type { Principal } from '../auth/users.js'
 import { checkMatchedTotal, matchCompanyFiles, type CompanyMatch, type ZipFile, type ZipScan } from './companyZip.js'
 import { composeEmail, MAX_TEMPLATES_PER_CAMPAIGN, pickTemplate, prepareTemplate, type PreparedTemplate, type TemplateOrder } from './content.js'
 import { readSpreadsheet } from './excel.js'
-import { extractContacts, firstNameOf, recipientsOf, strictEmail, type Extraction } from './extract.js'
+import { extractContacts, greetingName, perPerson, recipientsOf, strictEmail, type Extraction } from './extract.js'
 import { MAX_COMMON_FILES, MAX_EMAIL_ATTACHMENT_BYTES, readStaged, scanStagedZip, stagedCommon, stagedZipInfo, type FileInfo, type StagedZip } from './files.js'
 import { fmtLocal, localToUtc, planSequential } from './schedule.js'
 import { readiness, usableAccount } from './senders.js'
@@ -27,12 +27,20 @@ import { suppressedSet } from './suppression.js'
 //   blocked   — its company PDF is missing, ambiguous, damaged or too large: the campaign
 //               cannot start until the ZIP is corrected or these recipients are excluded.
 
-export const MAX_RECIPIENTS = 2000
+export const MAX_RECIPIENTS = 5000
 export const MAX_CC = 10
+
+export type RecipientMode = 'company' | 'person'
 
 export interface CampaignSetup {
   excelFileId: string
   allowWebmail?: boolean
+  /** The worksheet to read (default: the first with an email heading). */
+  sheet?: string
+  /** One email per company (colleagues copied; the default) or one per person. */
+  onePer?: RecipientMode
+  /** Where replies go, when not to the sender. */
+  replyTo?: string
   senderAccountId: string
   /** 1-3 templates: a saved one (templateId) or written here (subject + bodyHtml). */
   templates: Array<{ templateId?: string; subject?: string; bodyHtml?: string }>
@@ -78,6 +86,7 @@ export interface PreparedSetup {
   order: TemplateOrder
   seed: number
   cc: string[]
+  replyTo: string | null
   start: Date
   intervalMinutes: number
 }
@@ -112,13 +121,15 @@ export async function checkSetup(s: CampaignSetup): Promise<PreparedSetup> {
     if (!cc.includes(e)) cc.push(e)
   }
   if (cc.length > MAX_CC) throw new BadRequestError(`At most ${MAX_CC} CC addresses.`)
+  const replyTo = s.replyTo?.trim() ? strictEmail(s.replyTo) : null
+  if (s.replyTo?.trim() && !replyTo) throw new BadRequestError(`"${s.replyTo.slice(0, 80)}" is not a valid reply-to address.`)
   const start = localToUtc(s.startDate, s.startTime)
   if (!start) throw new BadRequestError('Choose the date and the time sending starts.')
   const intervalMinutes = Math.round(Number(s.intervalMinutes))
   if (!Number.isFinite(intervalMinutes) || intervalMinutes < env.MIN_INTERVAL_MINUTES || intervalMinutes > 240) {
     throw new BadRequestError(`Minutes between emails must be ${env.MIN_INTERVAL_MINUTES} to 240.`)
   }
-  return { templates, order, seed, cc, start, intervalMinutes }
+  return { templates, order, seed, cc, replyTo, start, intervalMinutes }
 }
 
 function companyFileView(m: CompanyMatch, common: { count: number; bytes: number }) {
@@ -133,21 +144,24 @@ function companyFileView(m: CompanyMatch, common: { count: number; bytes: number
 }
 
 /** What the uploaded Excel contains (no choices needed yet). */
-export async function analyzeExcel(user: Principal, excelFileId: string, allowWebmail = false) {
+export async function analyzeExcel(user: Principal, excelFileId: string, opts: { allowWebmail?: boolean; sheet?: string; onePer?: RecipientMode } = {}) {
   const { info, bytes } = await readStaged(user, excelFileId, 'excel')
-  const x = extractContacts(await readSpreadsheet(bytes), { allowWebmail })
+  const book = await readSpreadsheet(bytes, opts.sheet)
+  const onePer: RecipientMode = opts.onePer === 'person' ? 'person' : 'company'
+  const read = extractContacts(book.rows, { allowWebmail: opts.allowWebmail === true })
+  const x = onePer === 'person' ? perPerson(read) : read
   if (!x.columns.company || x.columns.contacts.length === 0) {
-    throw new BadRequestError('No "Company Name" and "Email" columns were found in the first sheet. Check the headings row.')
+    throw new BadRequestError(`No "Company" and "Email" columns were found in the sheet "${book.sheet}". Check the headings row, or choose another sheet.`)
   }
-  if (x.companies.length > MAX_RECIPIENTS) throw new BadRequestError(`At most ${MAX_RECIPIENTS} companies per campaign.`)
-  return { file: info, ...x }
+  if (x.companies.length > MAX_RECIPIENTS) throw new BadRequestError(`At most ${MAX_RECIPIENTS} ${onePer === 'person' ? 'people' : 'companies'} per campaign.`)
+  return { file: info, sheets: book.sheets, sheet: book.sheet, onePer, ...x }
 }
 
 export async function prepareReview(user: Principal, s: CampaignSetup, now = new Date()) {
   const setup = await checkSetup(s)
   const account = await usableAccount(user, s.senderAccountId)
   const sender = await readiness(account.id, now)
-  const upload: Extraction & { file: FileInfo } = await analyzeExcel(user, s.excelFileId, s.allowWebmail === true)
+  const upload: Extraction & { file: FileInfo; sheet: string; onePer: RecipientMode } = await analyzeExcel(user, s.excelFileId, { allowWebmail: s.allowWebmail === true, sheet: s.sheet, onePer: s.onePer })
   const attachments = await stagedCommon(user, s.attachmentIds)
   const commonFiles = { count: attachments.length, bytes: attachments.reduce((n, a) => n + a.sizeBytes, 0) }
   const zip: (StagedZip & { sha256: string }) | null = s.companyZipId ? await stagedZipInfo(user, s.companyZipId) : null
@@ -264,7 +278,7 @@ export async function prepareReview(user: Principal, s: CampaignSetup, now = new
     }
 
     const pick = pickTemplate(setup.order, setup.templates.length, readyCount, setup.seed)
-    const email = composeEmail({ template: setup.templates[pick]!, firstName: firstNameOf(to.name), companyName: c.companyName, signatureHtml: account.signatureHtml })
+    const email = composeEmail({ template: setup.templates[pick]!, firstName: greetingName(to), companyName: c.companyName, signatureHtml: account.signatureHtml })
     if (email.unfilled.length) {
       skip('invalid', `Could not fill ${email.unfilled.join(', ')}.`, { contactName: to.name, toEmail: to.email })
       continue
@@ -313,6 +327,7 @@ export async function prepareReview(user: Principal, s: CampaignSetup, now = new
       JSON.stringify({
         sender: account.email,
         sendMode: env.SEND_MODE,
+        replyTo: setup.replyTo,
         attachments: attachments.map((a) => [a.id, a.sizeBytes]),
         rows: rows.map((r) => [r.position, r.status, r.category, r.toEmail, r.ccEmails, r.subject, r.html, r.text, r.templateNumber, companyFiles.get(r.position)?.sha256 ?? r.companyFile?.fileName ?? null]),
       }),
@@ -339,7 +354,10 @@ export async function prepareReview(user: Principal, s: CampaignSetup, now = new
     templates: setup.templates.map((t, i) => ({ number: i + 1, subject: t.subject, removed: t.removed })),
     templateOrder: setup.templates.length > 1 ? setup.order : null,
     cc: setup.cc,
-    copyColleagues: s.copyColleagues !== false,
+    replyTo: setup.replyTo,
+    sheet: upload.sheet,
+    onePer: upload.onePer,
+    copyColleagues: upload.onePer === 'company' && s.copyColleagues !== false,
     sender: { id: account.id, email: account.email, displayName: account.displayName, ...sender },
     sendMode: env.SEND_MODE,
     attachments,

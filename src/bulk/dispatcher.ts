@@ -185,6 +185,7 @@ async function sendOne(c: Campaign, r: Recipient, now: Date): Promise<keyof Tick
       fromName: c.fromName,
       to: r.toEmail,
       cc,
+      replyTo: c.replyTo,
       subject: r.subject,
       html,
       text: r.bodyText,
@@ -207,7 +208,7 @@ async function sendOne(c: Campaign, r: Recipient, now: Date): Promise<keyof Tick
   await prisma.recipient.update({ where: { id: r.id }, data: { attemptedAt: now, attempts: { increment: 1 }, messageIdHeader: messageId, trackingTokenHash: trackingHash, trackingEnabled: Boolean(trackingHash) } })
   let res
   try {
-    res = await transport().send({ accountId: c.senderAccountId, recipientId: r.id, mime })
+    res = await transport().send({ accountId: c.senderAccountId, recipientId: r.id, mime, envelope: { from: c.fromEmail, to: [r.toEmail, ...cc] } })
   } catch (err) {
     res = { outcome: 'unknown' as const, reason: `Sending stopped unexpectedly (${String((err as Error).message).slice(0, 200)}). It may have been sent — it is not sent again automatically.` }
   }
@@ -236,7 +237,7 @@ async function sendOne(c: Campaign, r: Recipient, now: Date): Promise<keyof Tick
 /** Unknown outcomes looked up in the sender's Sent folder (only with GMAIL_READONLY_CHECK). Found → sent; not found → stays unknown. */
 async function reconcileUnknown(now: Date) {
   const rows = await prisma.recipient.findMany({
-    where: { status: 'unknown', messageIdHeader: { not: null }, attemptedAt: { lt: new Date(now.getTime() - 2 * 60_000) } },
+    where: { status: 'unknown', messageIdHeader: { not: null }, attemptedAt: { lt: new Date(now.getTime() - 2 * 60_000) }, campaign: { senderAccountId: { in: await oauthAccountIds() } } },
     include: { campaign: { select: { senderAccountId: true } } },
     take: 10,
   })
@@ -246,6 +247,11 @@ async function reconcileUnknown(now: Date) {
       await prisma.recipient.update({ where: { id: r.id }, data: { status: 'sent', sentAt: r.attemptedAt ?? now, gmailMessageId: found.gmailId ?? null, gmailThreadId: found.threadId ?? null, reason: 'Found in the Sent folder.' } })
     }
   }
+}
+
+/** Accounts signed in with Google (only those can look an email up in Sent; an app password cannot). */
+async function oauthAccountIds() {
+  return (await prisma.senderAccount.findMany({ where: { authType: 'oauth' }, select: { id: true } })).map((a) => a.id)
 }
 
 let timer: NodeJS.Timeout | null = null

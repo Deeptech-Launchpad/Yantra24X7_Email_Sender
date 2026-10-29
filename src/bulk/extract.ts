@@ -15,14 +15,22 @@ import { skipStatusWords } from '../config/env.js'
 //   · A company is skipped when its Status contains one of the words in
 //     EXCEL_SKIP_STATUS_WORDS (default "outreach": already contacted); any other
 //     Status is processed normally.
+//   · A list of PEOPLE (one email column, with "First Name" / "Last Name"
+//     columns) can instead be sent ONE EMAIL PER PERSON (perPerson): each row is
+//     its own email, nobody is copied, and [First Name] is the First Name cell
+//     exactly as written.
 // Nothing is guessed: no address is made from a name, and no name from an
 // address.
 
 export interface Person {
   name: string | null
+  /** The "First Name" cell as written (a list of people); null when the sheet has none. */
+  firstName: string | null
   title: string | null
   email: string
   row: number
+  /** Why this person's own row is not emailed (its Status), for one email per person. */
+  skip: string | null
 }
 
 export interface Company {
@@ -38,7 +46,7 @@ export interface Company {
 
 export interface Extraction {
   headerRow: number
-  columns: { company: string | null; status: string | null; contacts: Array<{ name: string | null; title: string | null; email: string }> }
+  columns: { company: string | null; status: string | null; firstName: string | null; contacts: Array<{ name: string | null; title: string | null; email: string }> }
   companies: Company[]
   /** Rows with a company but no usable work address, and why. */
   noAddress: Array<{ row: number; companyName: string; reason: string }>
@@ -106,6 +114,12 @@ export function firstNameOf(name: string | null | undefined): string | null {
   return first === first.toLowerCase() ? first[0]!.toUpperCase() + first.slice(1) : first
 }
 
+/** A "First Name" cell, kept as written (only spaces tidied). */
+function cleanFirstName(raw: string | null | undefined): string | null {
+  const t = (raw ?? '').replace(/\s+/g, ' ').trim()
+  return t && /\p{L}/u.test(t) && !t.includes('@') && t.length <= 60 ? t : null
+}
+
 function cleanName(raw: string | null | undefined): string | null {
   const t = (raw ?? '').replace(/\s+/g, ' ').trim()
   return t && /[A-Za-z]/.test(t) && !t.includes('@') ? t.slice(0, 120) : null
@@ -141,7 +155,10 @@ function detectColumns(header: string[]) {
     }
     return { name, title, email }
   })
-  return { company: company >= 0 ? company : null, status: status >= 0 ? status : null, pairs }
+  // A list of people: one email column, and the name split into First / Last Name.
+  const first = pairs.length === 1 ? h.findIndex((x) => /^(first name|firstname|given name)$/.test(x)) : -1
+  const last = first >= 0 ? h.findIndex((x) => /^(last name|lastname|surname|family name)$/.test(x)) : -1
+  return { company: company >= 0 ? company : null, status: status >= 0 ? status : null, pairs, first: first >= 0 ? first : null, last: last >= 0 ? last : null }
 }
 
 /** The Status words that mean "do not email this company" (from the configuration). */
@@ -179,9 +196,11 @@ export function extractContacts(rows: string[][], opts: { allowWebmail?: boolean
     c.rows.push(row)
     const status = cols.status === null ? '' : String(r[cols.status] ?? '').replace(/\s+/g, ' ').trim()
     if (status) c.status = c.status ? `${c.status} | ${status}` : status
+    let rowSkip: string | null = null
     for (const [re, why] of rules) {
-      if (!c.skip && re.test(status)) c.skip = `${why} (Status: "${status.slice(0, 80)}")`
+      if (!rowSkip && re.test(status)) rowSkip = `${why} (Status: "${status.slice(0, 80)}")`
     }
+    if (!c.skip) c.skip = rowSkip
     let any = false
     const reasons: string[] = []
     for (const p of cols.pairs) {
@@ -196,7 +215,9 @@ export function extractContacts(rows: string[][], opts: { allowWebmail?: boolean
         duplicates.push({ row, companyName, email })
         continue
       }
-      c.people.push({ name: p.name === null ? null : cleanName(r[p.name]), title: p.title === null ? null : cleanName(r[p.title]), email, row })
+      const firstName = cols.first === null ? null : cleanFirstName(r[cols.first])
+      const name = cols.first !== null ? cleanName([r[cols.first], cols.last === null ? '' : r[cols.last]].join(' ')) : p.name === null ? null : cleanName(r[p.name])
+      c.people.push({ name, firstName, title: p.title === null ? null : cleanName(r[p.title]), email, row, skip: rowSkip })
     }
     if (!any) noAddress.push({ row, companyName, reason: reasons[0] ?? 'No email address' })
   })
@@ -206,6 +227,7 @@ export function extractContacts(rows: string[][], opts: { allowWebmail?: boolean
     columns: {
       company: label(cols.company),
       status: label(cols.status),
+      firstName: label(cols.first),
       contacts: cols.pairs.map((p) => ({ name: label(p.name), title: label(p.title), email: label(p.email)! })),
     },
     companies: [...companies.values()],
@@ -215,8 +237,20 @@ export function extractContacts(rows: string[][], opts: { allowWebmail?: boolean
   }
 }
 
+/** The same list as one email per PERSON: every person is a "company" of their own (in the sheet's row order). */
+export function perPerson(x: Extraction): Extraction {
+  const people = x.companies.flatMap((c) => c.people.map((p) => ({ c, p }))).sort((a, b) => a.p.row - b.p.row)
+  return {
+    ...x,
+    companies: people.map(({ c, p }) => ({ key: `${c.key} ${p.email}`, companyName: c.companyName, rows: [p.row], people: [p], status: c.status, skip: p.skip })),
+  }
+}
+
+/** The first name an email greets a person with: the First Name cell, or the first word of the name. */
+export const greetingName = (p: Person) => p.firstName ?? firstNameOf(p.name)
+
 /** One email per company: the first named person receives it, the others are copied. */
 export function recipientsOf(c: Company): { to: Person | null; cc: Person[] } {
-  const to = c.people.find((p) => firstNameOf(p.name)) ?? null
+  const to = c.people.find((p) => greetingName(p)) ?? null
   return { to, cc: to ? c.people.filter((p) => p !== to) : [] }
 }

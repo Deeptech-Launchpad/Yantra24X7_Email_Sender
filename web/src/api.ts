@@ -120,6 +120,8 @@ export interface Account {
   id: string
   email: string
   displayName: string | null
+  /** oauth: signed in with Google; app_password: sends with a Gmail app password. */
+  authType: 'oauth' | 'app_password'
   status: 'connected' | 'needs_reconnect' | 'disconnected'
   statusReason: string | null
   signatureHtml: string

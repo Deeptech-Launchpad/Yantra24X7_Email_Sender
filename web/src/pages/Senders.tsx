@@ -5,8 +5,10 @@ import { canSend, useSession } from '../App'
 import { Banner, Html, HtmlEditor, Status, useAction, useLoad } from '../ui'
 
 // The Gmail accounts the team sends from. "Connect Gmail" opens Google's own page, where the person
-// signs in and allows this app to SEND email as them (it cannot read their mailbox). No password is
-// ever given to this app; the permission is kept encrypted and can be removed at any time.
+// signs in and allows this app to SEND email as them (it cannot read their mailbox); the permission is
+// kept encrypted and can be removed at any time. An account can instead be added with a Gmail APP
+// PASSWORD (never the account's normal password): it is checked with Gmail, kept encrypted, and never
+// shown again.
 
 export function Senders() {
   const { user, config } = useSession()
@@ -18,6 +20,7 @@ export function Senders() {
   const [signature, setSignature] = useState('')
   const [limit, setLimit] = useState('')
   const [note, setNote] = useState<string | null>(null)
+  const [appForm, setAppForm] = useState<{ email: string; password: string; name: string } | null>(null)
   const connected = params.get('connected')
   const error = params.get('error')
   const may = canSend(user)
@@ -27,6 +30,10 @@ export function Senders() {
       <div className="topbar">
         <h1>Sender accounts</h1>
         {may && (
+          <div className="row">
+          <button type="button" className="btn" disabled={Boolean(act.busy)} onClick={() => setAppForm(appForm ? null : { email: '', password: '', name: '' })}>
+            Add with app password
+          </button>
           <button
             type="button"
             className="btn primary"
@@ -40,9 +47,50 @@ export function Senders() {
           >
             Connect Gmail
           </button>
+          </div>
         )}
       </div>
-      {!config.googleConfigured && <Banner kind="warn">Gmail sign-in is not set up yet (GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET). An administrator sets it up once — see the README.</Banner>}
+      {appForm && (
+        <form
+          className="card accent"
+          onSubmit={(e) => {
+            e.preventDefault()
+            void act.run('app-password', async () => {
+              const a = await api.post<Account>('/senders/app-password', { email: appForm.email, appPassword: appForm.password, ...(appForm.name.trim() ? { displayName: appForm.name } : {}) })
+              setAppForm(null)
+              setNote(`${a.email} can now send with its app password. Check readiness before a campaign.`)
+              list.refresh()
+            })
+          }}
+        >
+          <h3>Add a Gmail account with an app password</h3>
+          <p className="note">
+            In the Google account: <b>Security → 2-Step Verification → App passwords</b>, create one for this app and paste the 16 letters here. It is not the account&rsquo;s normal password. It is checked with Gmail now
+            (no email is sent), kept encrypted, and never shown again. Removing it in the Google account stops this app at once.
+          </p>
+          <label className="field">
+            Gmail address
+            <input type="email" required autoComplete="off" value={appForm.email} onChange={(e) => setAppForm({ ...appForm, email: e.target.value })} />
+          </label>
+          <label className="field">
+            App password
+            <input type="password" required autoComplete="new-password" spellCheck={false} placeholder="xxxx xxxx xxxx xxxx" value={appForm.password} onChange={(e) => setAppForm({ ...appForm, password: e.target.value })} />
+          </label>
+          <label className="field">
+            Sender name (shown to recipients; optional)
+            <input maxLength={80} value={appForm.name} onChange={(e) => setAppForm({ ...appForm, name: e.target.value })} />
+          </label>
+          <div className="row">
+            <button type="submit" className="btn primary" disabled={Boolean(act.busy)}>
+              {act.busy === 'app-password' ? 'Checking with Gmail…' : 'Check and add'}
+            </button>
+            <button type="button" className="btn" onClick={() => setAppForm(null)}>
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
+      {!config.googleConfigured && <Banner kind="warn">Google sign-in is not set up yet (GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET), so &ldquo;Connect Gmail&rdquo; is off. Accounts can be added with an app password.</Banner>}
       {connected && (
         <Banner kind="ok">
           {connected} is connected.{' '}
@@ -80,6 +128,7 @@ export function Senders() {
                 <h3>{a.email}</h3>
                 <div className="row">
                   <Status value={a.status} />
+                  <span className="badge">{a.authType === 'app_password' ? 'app password' : 'Google sign-in'}</span>
                   {a.shared && <span className="badge brand">shared with the team</span>}
                   {!a.usable && <span className="badge">not yours</span>}
                   <span className="muted">
@@ -99,7 +148,12 @@ export function Senders() {
                     Check readiness
                   </button>
                 )}
-                {may && a.status === 'needs_reconnect' && mine && (
+                {may && a.status === 'needs_reconnect' && mine && a.authType === 'app_password' && (
+                  <button type="button" className="btn small primary" onClick={() => setAppForm({ email: a.email, password: '', name: a.displayName ?? '' })}>
+                    New app password
+                  </button>
+                )}
+                {may && a.status === 'needs_reconnect' && mine && a.authType === 'oauth' && (
                   <button
                     type="button"
                     className="btn small primary"
@@ -130,7 +184,7 @@ export function Senders() {
                     type="button"
                     className="btn small danger"
                     onClick={() =>
-                      window.confirm(`Disconnect ${a.email}? The permission is removed at Google too. You can connect it again later.`) &&
+                      window.confirm(a.authType === 'app_password' ? `Disconnect ${a.email}? Its app password is erased from this app (remove it in the Google account too). You can add it again later.` : `Disconnect ${a.email}? The permission is removed at Google too. You can connect it again later.`) &&
                       void act.run('disconnect', async () => {
                         await api.post(`/senders/${a.id}/disconnect`)
                         setNote(`${a.email} was disconnected.`)

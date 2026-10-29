@@ -12,7 +12,7 @@ import { MAX_ZIP_BYTES } from '../bulk/companyZip.js'
 import { MAX_UPLOAD_BYTES } from '../bulk/excel.js'
 import { appendZipChunk, finishZipUpload, MAX_COMMON_FILES, MAX_EMAIL_ATTACHMENT_BYTES, MAX_FILE_BYTES, removeStaged, startZipUpload, storeCommon, storeExcel, ZIP_CHUNK_BYTES } from '../bulk/files.js'
 import { analyzeExcel, MAX_CC, reviewCampaign } from '../bulk/review.js'
-import { listAccounts, readiness, updateAccount, usableAccount } from '../bulk/senders.js'
+import { connectAppPassword, listAccounts, readiness, updateAccount, usableAccount } from '../bulk/senders.js'
 import { addSuppressions, listSuppressions, removeSuppression } from '../bulk/suppression.js'
 import { archiveTemplate, listTemplates, previewTemplate, saveTemplate } from '../bulk/templates.js'
 import { trackingStatus } from '../bulk/tracking.js'
@@ -132,6 +132,15 @@ api.post(
     res.json({ url: r.url })
   }),
 )
+// A Gmail account that sends with an app password (checked with Gmail's mail server, stored encrypted).
+api.post(
+  '/senders/app-password',
+  canSend,
+  h(async (req, res) => {
+    const b = body(z.object({ email: z.string().max(254), appPassword: z.string().max(64), displayName: z.string().max(80).optional() }).strict(), req)
+    res.status(201).json(await connectAppPassword(who(req), b))
+  }),
+)
 api.post(
   '/senders/:id/check',
   h(async (req, res) => {
@@ -213,6 +222,9 @@ const Setup = z
   .object({
     excelFileId: id,
     allowWebmail: z.boolean().optional(),
+    sheet: z.string().min(1).max(100).optional(),
+    onePer: z.enum(['company', 'person']).optional(),
+    replyTo: z.string().max(254).optional(),
     senderAccountId: id,
     templates: z.array(z.object({ templateId: id.optional(), subject: z.string().max(MAX_SUBJECT + 50).optional(), bodyHtml: z.string().max(MAX_TEMPLATE_HTML + 5000).optional() }).strict()).min(1).max(MAX_TEMPLATES_PER_CAMPAIGN),
     templateOrder: z.enum(['sequential', 'random']).optional(),
@@ -235,8 +247,8 @@ api.post(
   '/campaigns/analyze',
   canSend,
   h(async (req, res) => {
-    const b = body(z.object({ excelFileId: id, allowWebmail: z.boolean().optional() }).strict(), req)
-    res.json(await analyzeExcel(who(req), b.excelFileId, b.allowWebmail === true))
+    const b = body(z.object({ excelFileId: id, allowWebmail: z.boolean().optional(), sheet: z.string().min(1).max(100).optional(), onePer: z.enum(['company', 'person']).optional() }).strict(), req)
+    res.json(await analyzeExcel(who(req), b.excelFileId, b))
   }),
 )
 api.post('/campaigns/review', canSend, h(async (req, res) => res.json(await reviewCampaign(who(req), body(Setup, req)))))

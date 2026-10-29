@@ -32,6 +32,9 @@ interface View {
     sendMode: string
     createdByUserId: string
     fromEmail: string
+    replyTo: string | null
+    recipientMode: string
+    sheetName: string | null
     cc: string[]
     copyColleagues: boolean
     intervalMinutes: number
@@ -184,8 +187,9 @@ export function CampaignDetail() {
         <div className="card">
           <h3>What was approved</h3>
           <p className="muted">
-            Excel: {c.sourceFileName ?? '—'} · {c.review.eligible} to send · {c.review.invalid} invalid · {c.review.duplicate} duplicate · {c.review.excluded} excluded
+            Excel: {c.sourceFileName ?? '—'}{c.sheetName ? ` (sheet "${c.sheetName}")` : ''}{c.recipientMode === 'person' ? ' · one email per person' : ''} · {c.review.eligible} to send · {c.review.invalid} invalid · {c.review.duplicate} duplicate · {c.review.excluded} excluded
           </p>
+          <p className="muted">Replies go to: {c.replyTo ?? c.fromEmail}</p>
           <p className="muted">CC: {[...(c.copyColleagues ? ['colleagues from the Excel'] : []), ...c.cc].join(', ') || 'none'}</p>
           <p className="muted">Templates: {c.templates.map((t) => `${t.number}. ${t.subject}`).join(' · ')}</p>
         </div>

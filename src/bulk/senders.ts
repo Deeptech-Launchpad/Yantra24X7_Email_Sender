@@ -1,6 +1,9 @@
 import { env, googleConfigured } from '../config/env.js'
-import { prisma } from '../platform/db.js'
-import { BadRequestError, ForbiddenError, NotFoundError } from '../platform/errors.js'
+import { newId, prisma } from '../platform/db.js'
+import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from '../platform/errors.js'
+import { seal } from '../platform/secretBox.js'
+import { APP_PASSWORD, appPasswordOf, normalizeAppPassword, verifyAppPassword } from '../gmail/smtp.js'
+import { strictEmail } from './extract.js'
 import { audit } from '../platform/log.js'
 import { accessToken, AccountAuthError, READONLY_SCOPE, SEND_SCOPE } from '../gmail/oauth.js'
 import type { Principal } from '../auth/users.js'
@@ -25,10 +28,12 @@ export const mayUse = (user: Principal, a: { connectedByUserId: string; shared: 
 export async function accountView(a: Account, now = new Date()) {
   const used = await sentLast24h(a.id, now)
   const scopes = a.scopes.split(/\s+/)
+  const appPassword = a.authType === 'app_password'
   return {
     id: a.id,
     email: a.email,
     displayName: a.displayName,
+    authType: a.authType,
     status: a.status,
     statusReason: a.statusReason,
     signatureHtml: a.signatureHtml,
@@ -39,8 +44,9 @@ export async function accountView(a: Account, now = new Date()) {
     connectedByUserId: a.connectedByUserId,
     connectedAt: a.connectedAt.toISOString(),
     lastCheckedAt: a.lastCheckedAt?.toISOString() ?? null,
-    canSend: scopes.includes(SEND_SCOPE),
-    canCheckSent: scopes.includes(READONLY_SCOPE),
+    canSend: appPassword || scopes.includes(SEND_SCOPE),
+    // Looking an email up in Sent needs Google's read permission; an app password cannot.
+    canCheckSent: !appPassword && scopes.includes(READONLY_SCOPE),
   }
 }
 
@@ -67,8 +73,17 @@ export async function readiness(accountId: string, now = new Date()): Promise<{ 
   if (!a || a.status === 'disconnected') return { ready: false, problems: ['The account is not connected.'], remainingToday: 0, dailyLimit: 0 }
   const problems: string[] = []
   if (a.status === 'needs_reconnect') problems.push(a.statusReason ?? 'The account must be reconnected.')
-  if (!a.scopes.split(/\s+/).includes(SEND_SCOPE)) problems.push('Permission to send email was not given. Reconnect and allow sending.')
-  if (env.SEND_MODE === 'live' && !problems.length) {
+  if (a.authType === 'oauth' && !a.scopes.split(/\s+/).includes(SEND_SCOPE)) problems.push('Permission to send email was not given. Reconnect and allow sending.')
+  if (env.SEND_MODE === 'live' && !problems.length && a.authType === 'app_password') {
+    // Signs in to Gmail's mail server and out again (no email is sent).
+    const cred = await appPasswordOf(a.id)
+    const v = cred ? await verifyAppPassword(cred.email, cred.password) : ({ ok: false, kind: 'auth', reason: 'The stored app password cannot be read. Update it.' } as const)
+    if (v.ok) await prisma.senderAccount.update({ where: { id: a.id }, data: { lastCheckedAt: now } })
+    else {
+      problems.push(v.reason)
+      if (v.kind === 'auth') await prisma.senderAccount.update({ where: { id: a.id }, data: { status: 'needs_reconnect', statusReason: v.reason } })
+    }
+  } else if (env.SEND_MODE === 'live' && !problems.length) {
     try {
       await accessToken(a.id)
       await prisma.senderAccount.update({ where: { id: a.id }, data: { lastCheckedAt: now } })
@@ -80,6 +95,34 @@ export async function readiness(accountId: string, now = new Date()): Promise<{ 
   const remainingToday = Math.max(0, a.dailyLimit - used)
   if (remainingToday === 0) problems.push(`The daily limit of ${a.dailyLimit} emails for this account has been reached; sending continues as the 24-hour window moves on.`)
   return { ready: problems.length === 0, problems, remainingToday, dailyLimit: a.dailyLimit }
+}
+
+/**
+ * Adds a Gmail account that sends with an APP PASSWORD (Google account → Security → 2-Step
+ * Verification → App passwords), or gives an existing one a new app password. The password is
+ * checked by signing in to Gmail's mail server (no email is sent), then stored encrypted; it is
+ * never shown again.
+ */
+export async function connectAppPassword(user: Principal, input: { email: string; appPassword: string; displayName?: string }, now = new Date()) {
+  if (user.role === 'viewer') throw new ForbiddenError('Viewers cannot add a sender account.')
+  const email = strictEmail(input.email)
+  if (!email) throw new BadRequestError('Enter the full Gmail address of the account.')
+  const password = normalizeAppPassword(input.appPassword)
+  if (!APP_PASSWORD.test(password)) throw new BadRequestError('An app password is the 16 letters Google shows (spaces do not matter). It is not the account\'s normal password.')
+  const existing = await prisma.senderAccount.findUnique({ where: { email } })
+  if (existing && existing.status !== 'disconnected' && user.role !== 'admin' && existing.connectedByUserId !== user.id)
+    throw new ForbiddenError('This account was added by someone else. Ask them, or an admin, to update it.')
+  if (existing && existing.authType === 'oauth' && existing.status !== 'disconnected')
+    throw new ConflictError('This account is connected with Google\'s sign-in already. Disconnect it first to use an app password instead.')
+  const v = await verifyAppPassword(email, password)
+  if (!v.ok) throw new BadRequestError(v.kind === 'auth' ? 'Gmail did not accept this app password for this address. Check both, or create a new app password.' : v.reason)
+  const displayName = input.displayName === undefined ? undefined : input.displayName.trim().slice(0, 80) || null
+  const data = { authType: 'app_password', refreshTokenEnc: seal(password), scopes: '', status: 'connected', statusReason: null, connectedAt: now, lastCheckedAt: now }
+  const account = existing
+    ? await prisma.senderAccount.update({ where: { id: existing.id }, data: { ...data, ...(displayName !== undefined ? { displayName } : {}), connectedByUserId: existing.status === 'disconnected' ? user.id : existing.connectedByUserId } })
+    : await prisma.senderAccount.create({ data: { ...data, id: newId(), email, displayName: displayName ?? null, dailyLimit: env.DEFAULT_DAILY_LIMIT, connectedByUserId: user.id } })
+  await audit({ userId: user.id, action: 'sender.connected', summary: `Gmail account ${email} ${existing ? 'given a new app password' : 'added with an app password'}` })
+  return accountView(account, now)
 }
 
 export async function updateAccount(user: Principal, id: string, patch: { signatureHtml?: string; dailyLimit?: number; shared?: boolean; displayName?: string }) {

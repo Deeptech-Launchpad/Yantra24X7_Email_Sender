@@ -16,8 +16,14 @@ const STEPS: Array<{ key: Step; label: string }> = [
   { key: 'approve', label: '4. Schedule & approve' },
 ]
 
+type OnePer = 'company' | 'person'
+
 interface Analysis {
   file: FileInfo
+  /** Every worksheet, and the one read. */
+  sheets: string[]
+  sheet: string
+  onePer: OnePer
   totalRows: number
   companies: Array<{ companyName: string; people: Array<{ email: string }>; skip: string | null }>
   noAddress: Array<{ row: number; companyName: string; reason: string }>
@@ -49,6 +55,9 @@ interface Review {
   templates: Array<{ number: number; subject: string; removed: string[] }>
   templateOrder: string | null
   cc: string[]
+  replyTo: string | null
+  onePer: OnePer
+  sheet: string
   copyColleagues: boolean
   sender: { id: string; email: string; ready: boolean; problems: string[]; remainingToday: number; dailyLimit: number }
   sendMode: 'test' | 'live'
@@ -83,6 +92,9 @@ export function NewCampaign() {
   const [step, setStep] = useState<Step>('recipients')
   const [excel, setExcel] = useState<FileInfo | null>(null)
   const [allowWebmail, setAllowWebmail] = useState(false)
+  const [sheet, setSheet] = useState('')
+  const [onePer, setOnePer] = useState<OnePer>('company')
+  const [replyTo, setReplyTo] = useState('')
   const [analysis, setAnalysis] = useState<Analysis | null>(null)
   const [senderId, setSenderId] = useState('')
   const [templates, setTemplates] = useState<TemplateChoice[]>([{ key: 1, source: 'saved', templateId: '', subject: '', bodyHtml: '' }])
@@ -111,6 +123,9 @@ export function NewCampaign() {
   const setup = (over: { excludeUnmatched?: boolean; excludePositions?: number[] } = {}) => ({
     excelFileId: excel!.id,
     allowWebmail,
+    ...(sheet ? { sheet } : {}),
+    onePer,
+    ...(replyTo.trim() ? { replyTo: replyTo.trim() } : {}),
     senderAccountId: senderId,
     templates: templates.map((t) => (t.source === 'saved' ? { templateId: t.templateId } : { subject: t.subject.trim(), bodyHtml: t.bodyHtml })),
     ...(templates.length > 1 ? { templateOrder: order, ...(order === 'random' ? { shuffleSeed: seed } : {}) } : {}),
@@ -143,15 +158,22 @@ export function NewCampaign() {
       setExcel(stored)
       setExcluded([])
       invalidate()
-      setAnalysis(await api.post<Analysis>('/campaigns/analyze', { excelFileId: stored.id, allowWebmail }))
+      // A new file: the server picks the first sheet with an email heading.
+      const a = await api.post<Analysis>('/campaigns/analyze', { excelFileId: stored.id, allowWebmail, onePer })
+      setSheet(a.sheet)
+      setAnalysis(a)
     })
   }
-  const reanalyze = (webmail: boolean) => {
-    setAllowWebmail(webmail)
+  const reanalyze = (over: { webmail?: boolean; sheet?: string; onePer?: OnePer }) => {
+    const next = { webmail: over.webmail ?? allowWebmail, sheet: over.sheet ?? sheet, onePer: over.onePer ?? onePer }
+    setAllowWebmail(next.webmail)
+    setSheet(next.sheet)
+    setOnePer(next.onePer)
     // The rows change, so exclusions made by row number no longer point at the same people.
     setExcluded([])
     invalidate()
-    if (excel) void act.run('excel', async () => setAnalysis(await api.post<Analysis>('/campaigns/analyze', { excelFileId: excel.id, allowWebmail: webmail })))
+    if (excel)
+      void act.run('excel', async () => setAnalysis(await api.post<Analysis>('/campaigns/analyze', { excelFileId: excel.id, allowWebmail: next.webmail, onePer: next.onePer, ...(next.sheet ? { sheet: next.sheet } : {}) })))
   }
   const addFiles = (files: FileList | null) => {
     if (!files?.length) return
@@ -309,8 +331,8 @@ export function NewCampaign() {
         <div className="card accent">
           <h2>Upload the recipient list</h2>
           <p className="note">
-            An Excel workbook (.xlsx) with a <strong>Company Name</strong> column and one or more contact / email columns (e.g. Contact Person 1, Email Id1, Contact Person 2, Email 2). One email per company: the first named person
-            receives it, colleagues are copied. Up to {formatSize(config.limits.maxExcelBytes)}.
+            An Excel workbook (.xlsx) with a <strong>Company</strong> column and one or more contact / email columns (e.g. Contact Person 1, Email Id1, Contact Person 2, Email 2 — or Email, First Name, Last Name for a list of
+            people). Up to {formatSize(config.limits.maxExcelBytes)}.
           </p>
           <div className="row">
             <input ref={excelInput} type="file" hidden accept=".xlsx" aria-label="Excel file" onChange={(e) => uploadExcel(e.target.files?.[0])} />
@@ -323,8 +345,31 @@ export function NewCampaign() {
               </span>
             )}
           </div>
+          {analysis && analysis.sheets.length > 1 && (
+            <label className="field">
+              Sheet
+              <select value={sheet} onChange={(e) => reanalyze({ sheet: e.target.value })}>
+                {analysis.sheets.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          <fieldset className="field" style={{ border: 0, padding: 0 }}>
+            <legend>Send</legend>
+            <label className="check">
+              <input type="radio" name="onePer" checked={onePer === 'company'} onChange={() => reanalyze({ onePer: 'company' })} />
+              <span>One email per company — the first named person receives it, colleagues are copied</span>
+            </label>
+            <label className="check">
+              <input type="radio" name="onePer" checked={onePer === 'person'} onChange={() => reanalyze({ onePer: 'person' })} />
+              <span>One email per person — every row gets its own email, nobody is copied; [First Name] is the First Name column as written</span>
+            </label>
+          </fieldset>
           <label className="check">
-            <input type="checkbox" checked={allowWebmail} onChange={(e) => reanalyze(e.target.checked)} />
+            <input type="checkbox" checked={allowWebmail} onChange={(e) => reanalyze({ webmail: e.target.checked })} />
             <span>
               Include personal / webmail addresses (gmail, yahoo …) — <strong>for a test with your own team&rsquo;s addresses</strong>. Leave this off for a real list: only work addresses are used.
             </span>
@@ -333,7 +378,7 @@ export function NewCampaign() {
             <>
               <div className="tiles">
                 <Tile n={analysis.totalRows} label="Rows with a company" />
-                <Tile n={analysis.companies.length} label="Companies" />
+                <Tile n={analysis.companies.length} label={analysis.onePer === 'person' ? 'People' : 'Companies'} />
                 <Tile n={sendable} label="With a usable address" brand />
                 <Tile n={analysis.noAddress.length} label="Rows without a usable address" />
                 <Tile n={analysis.duplicates.length} label="Repeated addresses" />
@@ -426,11 +471,17 @@ export function NewCampaign() {
           </div>
 
           <div className="card accent">
-            <h2>CC</h2>
-            <label className="check">
-              <input type="checkbox" checked={copyColleagues} onChange={(e) => (setCopyColleagues(e.target.checked), invalidate())} />
-              Copy the other contacts of the same company (from the Excel)
+            <h2>Replies and CC</h2>
+            <label className="field">
+              Replies go to (Reply-To; leave empty for the sender&rsquo;s own address)
+              <input type="email" maxLength={254} placeholder="name@company.com" value={replyTo} onChange={(e) => (setReplyTo(e.target.value), invalidate())} />
             </label>
+            {onePer === 'company' && (
+              <label className="check">
+                <input type="checkbox" checked={copyColleagues} onChange={(e) => (setCopyColleagues(e.target.checked), invalidate())} />
+                Copy the other contacts of the same company (from the Excel)
+              </label>
+            )}
             <span className="field">Also copy on every email (up to {config.limits.maxCc})</span>
             <EmailList value={cc} onChange={(v) => (setCc(v), invalidate())} max={config.limits.maxCc} label="CC address" />
           </div>
@@ -611,6 +662,7 @@ export function NewCampaign() {
                   {preview ? (
                     <>
                       <div className="muted">From {review.sender.email}</div>
+                      {review.replyTo && <div className="muted">Reply-To {review.replyTo}</div>}
                       <div className="muted">To {preview.toEmail}</div>
                       {preview.ccEmails.length > 0 && <div className="muted">CC {preview.ccEmails.join(', ')}</div>}
                       <p>
@@ -674,6 +726,10 @@ export function NewCampaign() {
                 {review.sender.problems.length > 0 && <div className="muted">{review.sender.problems.join(' ')}</div>}
               </li>
               {review.schedule.limitNote && <li className="muted">{review.schedule.limitNote}</li>}
+              <li>
+                Recipients: sheet <strong>{review.sheet}</strong>, {review.onePer === 'person' ? 'one email per person' : 'one email per company'}
+              </li>
+              <li>Replies go to: <strong>{review.replyTo ?? review.sender.email}</strong></li>
               <li>CC: {[...(review.copyColleagues ? ['colleagues from the Excel'] : []), ...review.cc].join(', ') || 'none'}</li>
               <li>Templates: {review.templates.map((t) => `${review.templates.length > 1 ? `${t.number}. ` : ''}${t.subject}`).join(' · ')}{review.templateOrder ? ` (${review.templateOrder === 'random' ? 'at random' : 'in order'})` : ''}</li>
               {review.attachments.length > 0 && <li>Attachments on every email: {review.attachments.map((a) => `${a.fileName} (${formatSize(a.sizeBytes)})`).join(', ')}</li>}

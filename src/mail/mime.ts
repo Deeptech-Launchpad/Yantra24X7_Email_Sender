@@ -18,12 +18,14 @@ export interface OutgoingEmail {
   fromName?: string | null
   to: string
   cc: string[]
+  /** Where replies go, when not to the sender. */
+  replyTo?: string | null
   subject: string
   html: string
   text: string
   attachments: OutgoingFile[]
   messageId: string
-  /** Adds List-Unsubscribe pointing to the sender's own mailbox. */
+  /** Adds List-Unsubscribe pointing to the mailbox that gets the replies (Reply-To, or the sender). */
   listUnsubscribeMailto?: boolean
 }
 
@@ -35,11 +37,12 @@ export function makeMessageId(recipientId: string, from: string, random: string)
 
 export async function buildMime(e: OutgoingEmail): Promise<Buffer> {
   const headers: Record<string, string> = {}
-  if (e.listUnsubscribeMailto) headers['List-Unsubscribe'] = `<mailto:${e.from}?subject=unsubscribe>`
+  if (e.listUnsubscribeMailto) headers['List-Unsubscribe'] = `<mailto:${e.replyTo || e.from}?subject=unsubscribe>`
   const composer = new MailComposer({
     from: e.fromName ? { name: e.fromName, address: e.from } : e.from,
     to: e.to,
     ...(e.cc.length ? { cc: e.cc } : {}),
+    ...(e.replyTo ? { replyTo: e.replyTo } : {}),
     subject: e.subject,
     text: e.text,
     html: e.html,

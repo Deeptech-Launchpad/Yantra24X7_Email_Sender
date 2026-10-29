@@ -75,6 +75,9 @@ export async function startCampaign(user: Principal, s: CampaignSetup & { confir
         templateMode: review.templateOrder ?? 'single',
         templatesJson: toJson(review.setup.templates.map((t) => ({ subject: t.subject, html: t.html }))),
         ccJson: toJson(review.cc),
+        replyTo: review.replyTo,
+        recipientMode: review.onePer,
+        sheetName: review.sheet,
         copyColleagues: review.copyColleagues,
         intervalMinutes: review.setup.intervalMinutes,
         startAt: review.setup.start,
@@ -131,7 +134,7 @@ export async function startCampaign(user: Principal, s: CampaignSetup & { confir
     userId: user.id,
     campaignId: id,
     action: 'campaign.started',
-    summary: `Campaign "${name}" approved by ${user.email}: ${ready.length} emails from ${review.sender.email} (${env.SEND_MODE} mode), first ${review.schedule.firstLocal}, ${review.setup.intervalMinutes} min apart; ${review.counts.invalid} invalid, ${review.counts.duplicate} duplicate, ${review.counts.excluded} excluded${review.attachments.length ? `; attachments: ${review.attachments.map((a) => a.fileName).join(', ')}` : ''}${review.companyZip ? `; company PDFs from ${review.companyZip.fileName}: ${fileIds.size}` : ''}`,
+    summary: `Campaign "${name}" approved by ${user.email}: ${ready.length} emails from ${review.sender.email} (${env.SEND_MODE} mode), first ${review.schedule.firstLocal}, ${review.setup.intervalMinutes} min apart${review.replyTo ? `, replies to ${review.replyTo}` : ''}; ${review.counts.invalid} invalid, ${review.counts.duplicate} duplicate, ${review.counts.excluded} excluded${review.attachments.length ? `; attachments: ${review.attachments.map((a) => a.fileName).join(', ')}` : ''}${review.companyZip ? `; company PDFs from ${review.companyZip.fileName}: ${fileIds.size}` : ''}`,
   })
   return { campaignId: id, scheduled: ready.length }
 }
@@ -170,6 +173,9 @@ const campaignRow = (c: Awaited<ReturnType<typeof prisma.campaign.findFirst>> & 
   fromEmail: c.fromEmail,
   templateMode: c.templateMode,
   cc: fromJson<string[]>(c.ccJson, []),
+  replyTo: c.replyTo,
+  recipientMode: c.recipientMode,
+  sheetName: c.sheetName,
   copyColleagues: c.copyColleagues,
   intervalMinutes: c.intervalMinutes,
   startLocal: fmtLocal(c.startAt, c.timezone),
@@ -329,6 +335,8 @@ export async function resolveUnknown(user: Principal, id: string, recipientId: s
 export async function reconcileCampaign(user: Principal, id: string) {
   const c = await controlledCampaign(user, id)
   if (!env.GMAIL_READONLY_CHECK) throw new ConflictError('Looking up emails in Sent is not switched on (GMAIL_READONLY_CHECK). Check the Sent folder and resolve each email by hand.')
+  const account = await prisma.senderAccount.findUnique({ where: { id: c.senderAccountId }, select: { authType: true } })
+  if (account?.authType !== 'oauth') throw new ConflictError('This account sends with an app password, which cannot look in Sent. Check the Sent folder in Gmail and resolve each email by hand.')
   const unknown = await prisma.recipient.findMany({ where: { campaignId: id, status: 'unknown', messageIdHeader: { not: null } }, take: 100 })
   let found = 0
   for (const r of unknown) {

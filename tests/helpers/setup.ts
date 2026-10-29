@@ -29,4 +29,8 @@ Object.assign(process.env, {
   GOOGLE_TOKEN_URL: 'http://127.0.0.1:9/token',
   GOOGLE_REVOKE_URL: 'http://127.0.0.1:9/revoke',
   GMAIL_API_BASE: 'http://127.0.0.1:9',
+  // Never Gmail's mail server either: a fake one on this machine (tests/helpers/fakeSmtp.ts), or nothing.
+  SMTP_HOST: '127.0.0.1',
+  SMTP_PORT: '9',
+  SMTP_SECURE: 'false',
 })
