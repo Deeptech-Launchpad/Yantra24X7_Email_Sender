@@ -64,11 +64,29 @@ describe('templates', () => {
     expect(f.html).toBe('<p>Dear {First name|there},</p>')
   })
 
-  it('a placeholder broken up by formatting ([First <b>Name</b>]) can never be sent as it is: the email is blocked', () => {
-    const t = prepareTemplate({ subject: 'S', bodyHtml: '<p>Dear [First <b>Name</b>],</p>' })
-    const e = composeEmail({ template: t, firstName: 'Ann', companyName: 'Acme' })
-    expect(e.draft).toEqual(['[First Name]'])
-    expect(e.unfilled).toEqual([])
+  it('a placeholder cut into pieces by formatting (pasted from Gmail, Word or Outlook) is joined and filled; the formatting stays balanced', () => {
+    const cases = [
+      '<p>Dear [First <b>Name</b>],</p>',
+      '<p>Dear <span style="font-family:Arial">[First name</span><span style="font-family:Arial;font-size:11pt">],</span></p>',
+      '<p>Dear [<i>First</i>&nbsp;<i>name</i>],</p>',
+    ]
+    for (const html of cases) {
+      const t = prepareTemplate({ subject: 'S', bodyHtml: html })
+      expect(t.html, html).toMatch(/\[First Name\]/)
+      const e = composeEmail({ template: t, firstName: 'Ann', companyName: 'Acme' })
+      expect(e.html, html).toContain('Ann')
+      expect(e.html, html).not.toMatch(/\[First/)
+      expect(e).toMatchObject({ unfilled: [], draft: [] })
+      const opens = (e.html.match(/<(span|b|i)[\s>]/g) ?? []).length
+      const closes = (e.html.match(/<\/(span|b|i)>/g) ?? []).length
+      expect(closes, html).toBe(opens)
+    }
+    // the brace form with a fallback, split by formatting, still falls back
+    const f = prepareTemplate({ subject: 'S', bodyHtml: '<p>Dear {First <b>name</b>|there},</p>' })
+    expect(composeEmail({ template: f, firstName: null, companyName: null }).html).toContain('Dear there')
+    // text that only looks like a placeholder stays what it is: not filled, and blocked as draft text
+    const other = prepareTemplate({ subject: 'S', bodyHtml: '<p>[Your <b>Name</b>]</p>' })
+    expect(composeEmail({ template: other, firstName: 'Ann', companyName: 'Acme' }).draft).toEqual(['[Your Name]'])
   })
 
   it('unfinished draft text ({Title}, [Part: …], [where the data is stored]) is reported, so such an email is never approved; the two real placeholders are not draft text', () => {

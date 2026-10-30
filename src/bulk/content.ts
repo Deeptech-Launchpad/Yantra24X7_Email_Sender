@@ -135,11 +135,30 @@ export interface PreparedTemplate {
 
 /** Validates and cleans a template. Throws a sentence a person can act on. */
 /**
+ * A placeholder that formatting has cut into pieces — "[First name</span><span style=…>]" or "[First <b>Name</b>]", which
+ * Gmail, Word and Outlook do when text is pasted — becomes one piece again. The tags inside it are kept, in the same
+ * order, right after it, so the formatting stays balanced and only the placeholder's own letters are joined.
+ */
+function joinSplitPlaceholders(s: string): string {
+  const fix = (m: string, inner: string, brace: boolean) => {
+    const tags = inner.match(/<[^>]*>/g)
+    if (!tags) return m // nothing split it: the ordinary rule handles it
+    const text = inner.replace(/<[^>]*>/g, '').replace(/&nbsp;/gi, ' ').replace(/\s+/g, ' ').trim()
+    const hit = brace ? /^(first name|company name)\s*(?:\|\s*([^{}|]{1,40}?))?$/i.exec(text) : /^(first name|company name)$/i.exec(text)
+    if (!hit) return m
+    const first = /^first/i.test(hit[1]!)
+    const word = brace ? `{${first ? 'First name' : 'Company name'}${hit[2] ? `|${hit[2].trim()}` : ''}}` : first ? '[First Name]' : '[Company Name]'
+    return word + tags.join('')
+  }
+  return s.replace(/\[((?:<[^>]*>|[^[\]<>])*)\]/g, (m, inner: string) => fix(m, inner, false)).replace(/\{((?:<[^>]*>|[^{}<>])*)\}/g, (m, inner: string) => fix(m, inner, true))
+}
+
+/**
  * The placeholders of a template, written in the one standard form: [First Name] and [Company Name]
  * ({First name|there} keeps its fallback word). Idempotent: what is stored and previewed is what is filled.
  */
 export function normalizePlaceholders(s: string): string {
-  return s.replace(PLACEHOLDER, (_token, bracket: string | undefined, brace: string | undefined, fallback: string | undefined) => {
+  return joinSplitPlaceholders(s).replace(PLACEHOLDER, (_token, bracket: string | undefined, brace: string | undefined, fallback: string | undefined) => {
     const first = isFirstName(bracket, brace)
     if (brace && fallback) return `{${first ? 'First name' : 'Company name'}|${fallback.trim()}}`
     return first ? '[First Name]' : '[Company Name]'
