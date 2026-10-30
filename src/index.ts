@@ -12,8 +12,8 @@ if (problems.length) {
   process.exit(1)
 }
 
-const server = createApp().listen(env.PORT, () => {
-  log.info('Yantra 24x7 Bulk Email started', { port: env.PORT, sendMode: env.SEND_MODE, tracking: env.TRACKING_ENABLED })
+const server = createApp().listen(env.PORT, env.HOST, () => {
+  log.info('Yantra 24x7 Bulk Email started', { host: env.HOST, port: env.PORT, sendMode: env.SEND_MODE, tracking: env.TRACKING_ENABLED })
   if (env.SEND_MODE === 'test') log.info('TEST MODE: no email is sent; every email is written to DATA_DIR/outbox as an .eml file')
   startDispatcher()
 })

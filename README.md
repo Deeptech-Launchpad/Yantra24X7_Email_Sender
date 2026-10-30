@@ -93,6 +93,7 @@ Names only — never commit `.env`. Every value is this application's own.
 |---|---|---|
 | `NODE_ENV` | | `production` on the server |
 | `PORT` | | default 4300 |
+| `HOST` | | default `127.0.0.1`: the app listens only on its own machine and is reached through the web server (nginx + HTTPS). `0.0.0.0` opens the port on every network address |
 | `APP_BASE_URL` | yes | the address people open (e.g. `https://bulk.yanthara-domain`); used for Google's return address |
 | `COMPANY_NAME` | | shown in the header (default Yanthara) |
 | `DATABASE_URL` | yes | `file:../data/yanthara.db` (relative to `prisma/`) |

@@ -19,6 +19,9 @@ const bool = z
 const Env = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(4300),
+  // The network address the app listens on. 127.0.0.1 = only this computer / server: people reach it through
+  // the web server (nginx, HTTPS), never directly. Use 0.0.0.0 only when something else must connect to the port.
+  HOST: z.string().min(1).default('127.0.0.1'),
   APP_BASE_URL: z.string().url().default('http://localhost:4300'),
   COMPANY_NAME: z.string().min(1).max(80).default('Yantra 24x7'),
 
