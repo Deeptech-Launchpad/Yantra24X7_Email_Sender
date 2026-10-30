@@ -21,8 +21,11 @@ export const PLACEHOLDERS = ['[First Name]', '[Company Name]'] as const
 
 // [First Name] and [Company Name], or the merge form many mailing tools use: {First name}, {Company name} and
 // {First name|there} — the word after the bar is used when the person has no first name ("Dear there,").
-const PLACEHOLDER = /\[(First Name|Company Name)\]|\{(First name|Company name)(?:\|([^{}|\n]{1,40}))?\}/gi
-const PLACEHOLDER_ONLY = /^(?:\[(?:First Name|Company Name)\]|\{(?:First name|Company name)(?:\|[^{}|\n]{1,40})?\})$/i
+// However it was typed or pasted — any capitals, extra spaces, a non-breaking space ("&nbsp;") from Gmail or Word.
+const WS = '(?:\\s|&nbsp;)+'
+const WS0 = '(?:\\s|&nbsp;)*'
+const PLACEHOLDER = new RegExp(`\\[${WS0}(First${WS}Name|Company${WS}Name)${WS0}\\]|\\{${WS0}(First${WS}name|Company${WS}name)${WS0}(?:\\|${WS0}([^{}|\\n]{1,40}?)${WS0})?\\}`, 'gi')
+const PLACEHOLDER_ONLY = new RegExp(`^(?:\\[${WS0}(?:First${WS}Name|Company${WS}Name)${WS0}\\]|\\{${WS0}(?:First${WS}name|Company${WS}name)${WS0}(?:\\|${WS0}[^{}|\\n]{1,40}?${WS0})?\\})$`, 'i')
 /** Which value a matched placeholder asks for. */
 const isFirstName = (bracket: string | undefined, brace: string | undefined) => /^first/i.test(bracket ?? brace ?? '')
 const DATA_IMAGE = /^data:image\/(png|jpe?g|gif|webp);base64,([A-Za-z0-9+/=\s]+)$/i
@@ -131,17 +134,30 @@ export interface PreparedTemplate {
 }
 
 /** Validates and cleans a template. Throws a sentence a person can act on. */
+/**
+ * The placeholders of a template, written in the one standard form: [First Name] and [Company Name]
+ * ({First name|there} keeps its fallback word). Idempotent: what is stored and previewed is what is filled.
+ */
+export function normalizePlaceholders(s: string): string {
+  return s.replace(PLACEHOLDER, (_token, bracket: string | undefined, brace: string | undefined, fallback: string | undefined) => {
+    const first = isFirstName(bracket, brace)
+    if (brace && fallback) return `{${first ? 'First name' : 'Company name'}|${fallback.trim()}}`
+    return first ? '[First Name]' : '[Company Name]'
+  })
+}
+
 export function prepareTemplate(input: { subject: string; bodyHtml: string }): PreparedTemplate {
-  const subject = String(input.subject ?? '').trim()
+  const subject = normalizePlaceholders(String(input.subject ?? '').trim())
   if (!subject) throw new BadRequestError('Enter the subject.')
   if (/[\r\n]/.test(subject)) throw new BadRequestError('The subject must be one line.')
   if (subject.length > MAX_SUBJECT) throw new BadRequestError(`The subject is longer than ${MAX_SUBJECT} characters.`)
   const raw = String(input.bodyHtml ?? '')
   if (raw.length > MAX_TEMPLATE_HTML) throw new BadRequestError('The email body is too long. Shorten it and try again.')
   const cleaned = cleanEmailHtml(raw, 'template')
-  const text = htmlToText(cleaned.html)
+  const html = normalizePlaceholders(cleaned.html)
+  const text = htmlToText(html)
   if (!text) throw new BadRequestError('Write or paste the email body.')
-  return { subject, html: cleaned.html, text, removed: cleaned.removed }
+  return { subject, html, text, removed: cleaned.removed }
 }
 
 export function prepareSignature(html: string): { html: string; removed: string[] } {
@@ -193,13 +209,17 @@ export function composeEmail(input: { template: PreparedTemplate; firstName: str
   const sig = (input.signatureHtml ?? '').trim()
   const sigText = sig ? htmlToText(sig) : ''
   const text = htmlToText(html) + (sigText ? `\n\n${sigText}` : '')
-  const draft = [...new Set(`${subject.text}\n${text}`.match(DRAFT_TEXT) ?? [])].filter((t) => !PLACEHOLDER_ONLY.test(t)).map((t) => t.slice(0, 70))
+  const unfilled = [...new Set([...subject.unfilled, ...body.unfilled])]
+  // A placeholder still in the text is only acceptable when it is reported as unfilled (a blank name). One that was
+  // never found by the fill — for example because formatting splits it ("[First <b>Name</b>]") — would be sent as it
+  // is, so it counts as draft text and the email is blocked.
+  const draft = [...new Set(`${subject.text}\n${text}`.match(DRAFT_TEXT) ?? [])].filter((t) => !(PLACEHOLDER_ONLY.test(t) && unfilled.includes(t))).map((t) => t.slice(0, 70))
   return {
     draft,
     subject: subject.text,
     html: `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;color:#222">${html}${sig ? `<div><br></div><div>${sig}</div>` : ''}</div>`,
     text,
-    unfilled: [...new Set([...subject.unfilled, ...body.unfilled])],
+    unfilled,
   }
 }
 

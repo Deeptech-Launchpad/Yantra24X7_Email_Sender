@@ -44,8 +44,31 @@ describe('templates', () => {
     expect(noName.subject).toBe('For your company')
     expect(noName.html).toContain('Dear there,')
     // no fallback given: the blank value is reported (never sent as a tag), and it is not "draft text"
-    expect(noName.unfilled.sort()).toEqual(['{Company name}', '{first name}'])
+    expect(noName.unfilled.sort()).toEqual(['[Company Name]', '[First Name]']) // stored in the standard form
     expect(noName.draft).toEqual([])
+  })
+
+  it('a placeholder typed in any way is stored as the standard [First Name] / [Company Name] and filled: capitals, extra spaces, a non-breaking space from Gmail or Word', () => {
+    const variants = ['[First Name]', '[first name]', '[first  name ]', '[ FIRST NAME ]', '[First&nbsp;Name]', '[First Name]', '{First name}', '{ first  name }']
+    for (const v of variants) {
+      const t = prepareTemplate({ subject: 'Hi [ company   name ]', bodyHtml: `<p>Dear ${v},</p>` })
+      expect(t.html, v).toBe('<p>Dear [First Name],</p>')
+      expect(t.subject, v).toBe('Hi [Company Name]')
+      const e = composeEmail({ template: t, firstName: 'Ann', companyName: 'Acme' })
+      expect(e.html, v).toContain('Dear Ann,')
+      expect(e.subject).toBe('Hi Acme')
+      expect(e).toMatchObject({ unfilled: [], draft: [] })
+    }
+    // the fallback form keeps its word, however it was spaced
+    const f = prepareTemplate({ subject: 'S', bodyHtml: '<p>Dear { First name | there },</p>' })
+    expect(f.html).toBe('<p>Dear {First name|there},</p>')
+  })
+
+  it('a placeholder broken up by formatting ([First <b>Name</b>]) can never be sent as it is: the email is blocked', () => {
+    const t = prepareTemplate({ subject: 'S', bodyHtml: '<p>Dear [First <b>Name</b>],</p>' })
+    const e = composeEmail({ template: t, firstName: 'Ann', companyName: 'Acme' })
+    expect(e.draft).toEqual(['[First Name]'])
+    expect(e.unfilled).toEqual([])
   })
 
   it('unfinished draft text ({Title}, [Part: …], [where the data is stored]) is reported, so such an email is never approved; the two real placeholders are not draft text', () => {
