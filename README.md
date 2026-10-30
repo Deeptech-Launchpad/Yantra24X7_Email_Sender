@@ -169,6 +169,15 @@ test addresses).
 
 ---
 
+## Opening the app at an IP address, without HTTPS
+
+Not recommended for real use: the sign-in password — and any Gmail app password typed into the screens — travels
+unencrypted. If you still want `http://SERVER-IP:4300`, set in `.env`: `HOST=0.0.0.0` and `APP_BASE_URL=http://SERVER-IP:4300`
+(a plain-http address switches off the "upgrade to https" rule and HSTS, which would otherwise leave the page blank),
+restart, and ideally limit the port to your own address in the firewall. The safer ways: HTTPS on a domain (nginx +
+certbot, see Deployment), or an SSH tunnel (`ssh -L 4300:127.0.0.1:4300 user@server`, then open `http://localhost:4300`)
+with the default `HOST=127.0.0.1`.
+
 ## Open tracking — the option is built; it switches on once the domain and server are known
 
 Each bulk email has a **Track opens** option (step 3, *Date, time and start*; off unless ticked). It can be ticked only

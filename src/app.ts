@@ -16,10 +16,16 @@ export function createApp() {
   const app = express()
   app.disable('x-powered-by')
   app.set('trust proxy', 'loopback')
+  // "Upgrade every request to https" and HSTS are right when the app is opened over https. When it is opened at a plain
+  // http address (for example http://SERVER-IP:4300) they would make the browser ask for https files the server cannot
+  // give and the page would stay blank — so they follow the scheme of APP_BASE_URL.
+  const https = env.APP_BASE_URL.startsWith('https://')
   app.use(
     helmet({
+      strictTransportSecurity: https,
       contentSecurityPolicy: {
         directives: {
+          ...(https ? {} : { upgradeInsecureRequests: null }),
           defaultSrc: ["'self'"],
           // Email previews show pictures from the web and embedded signature pictures.
           imgSrc: ["'self'", 'https:', 'data:'],

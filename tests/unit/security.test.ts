@@ -104,6 +104,31 @@ describe('files and inputs', () => {
     expect(r.headers.get('x-content-type-options')).toBe('nosniff')
     expect(r.headers.get('x-powered-by')).toBeNull()
   })
+
+  it('at a plain http address the page is not told to switch to https (it would stay blank); at an https address it is', async () => {
+    const original = env.APP_BASE_URL
+    const csp = async (base: string) => {
+      env.APP_BASE_URL = base
+      const h = await startApp()
+      try {
+        const r = await fetch(`${h.base}/health`)
+        return { csp: r.headers.get('content-security-policy') ?? '', hsts: r.headers.get('strict-transport-security') }
+      } finally {
+        await h.close()
+      }
+    }
+    try {
+      const http = await csp('http://72.61.245.208:4300')
+      expect(http.csp).toMatch(/default-src 'self'/)
+      expect(http.csp).not.toMatch(/upgrade-insecure-requests/)
+      expect(http.hsts).toBeNull()
+      const https = await csp('https://bulk.yantra24x7.com')
+      expect(https.csp).toMatch(/upgrade-insecure-requests/)
+      expect(https.hsts).toMatch(/max-age=/)
+    } finally {
+      env.APP_BASE_URL = original
+    }
+  })
 })
 
 describe('secrets and reports', () => {
