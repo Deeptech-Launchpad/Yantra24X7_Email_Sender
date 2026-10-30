@@ -205,7 +205,7 @@ export function Senders() {
             {editing === a.id && (
               <div style={{ marginTop: 12 }}>
                 <span className="field">Signature (added under every email from this account)</span>
-                <HtmlEditor key={a.id} label="Signature" initialHtml={a.signatureHtml} onChange={setSignature} />
+                <HtmlEditor key={a.id} label="Signature" pictures initialHtml={a.signatureHtml} onChange={setSignature} />
                 <div className="grid2" style={{ marginTop: 8 }}>
                   <label className="field">
                     Daily limit

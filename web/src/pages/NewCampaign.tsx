@@ -130,6 +130,7 @@ export function NewCampaign() {
   const [trackOpens, setTrackOpens] = useState(config.tracking.enabled)
   const [analysis, setAnalysis] = useState<Analysis | null>(null)
   const [senderId, setSenderId] = useState('')
+  const [sigDirty, setSigDirty] = useState(false)
   const [templates, setTemplates] = useState<TemplateChoice[]>([{ key: 1, source: 'saved', templateId: '', subject: '', bodyHtml: '' }])
   const [order, setOrder] = useState<'sequential' | 'random'>('sequential')
   const [seed, setSeed] = useState(() => Math.floor(Math.random() * 0x7fffffff))
@@ -596,6 +597,17 @@ export function NewCampaign() {
                 </label>
               </div>
             )}
+            {senderId && usable.find((a) => a.id === senderId) && (
+              <SenderSignature
+                key={senderId}
+                account={usable.find((a) => a.id === senderId)!}
+                onDirty={setSigDirty}
+                onSaved={() => {
+                  accounts.refresh()
+                  invalidate()
+                }}
+              />
+            )}
             {onePer === 'company' && (
               <label className="check">
                 <input type="checkbox" checked={copyColleagues} onChange={(e) => (setCopyColleagues(e.target.checked), invalidate())} />
@@ -671,9 +683,10 @@ export function NewCampaign() {
             </>
           )}
           <div className="row" style={{ marginTop: 'var(--s3)' }}>
-            <button type="button" className="btn primary" disabled={!analysis || (mode === 'sheets' ? sendable === 0 : sendableRows.length === 0) || !senderId || !templateOk || Boolean(act.busy)} onClick={() => go('review')}>
+            <button type="button" className="btn primary" disabled={!analysis || (mode === 'sheets' ? sendable === 0 : sendableRows.length === 0) || !senderId || !templateOk || sigDirty || Boolean(act.busy)} onClick={() => go('review')}>
               Next: review emails
             </button>
+            {sigDirty && <span className="cell-dim">Save the signature first (button under the signature box).</span>}
           </div>
         </>
       )}
@@ -1031,5 +1044,56 @@ export function NewCampaign() {
         </>
       )}
     </Panel>
+  )
+}
+
+/** The signature added under every email sent from the chosen account: type or paste it, with the company logo. */
+function SenderSignature({ account, onDirty, onSaved }: { account: Account; onDirty: (dirty: boolean) => void; onSaved: () => void }) {
+  const [html, setHtml] = useState(account.signatureHtml)
+  const [saved, setSaved] = useState(account.signatureHtml)
+  const [note, setNote] = useState<string | null>(null)
+  const act = useAction()
+  const dirty = html !== saved
+  useEffect(() => {
+    onDirty(dirty)
+    return () => onDirty(false)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dirty])
+  return (
+    <div style={{ marginTop: 12 }}>
+      <span className="field-label">Signature — added at the end of every email sent from {account.email}</span>
+      <HtmlEditor
+        label="Signature"
+        pictures
+        initialHtml={account.signatureHtml}
+        onChange={(v) => {
+          setHtml(v)
+          setNote(null)
+        }}
+      />
+      <div className="row" style={{ marginTop: 8 }}>
+        <button
+          type="button"
+          className="btn small primary"
+          disabled={!dirty || Boolean(act.busy)}
+          onClick={() =>
+            void act.run('signature', async () => {
+              const r = await api.patch<{ signatureRemoved: string[]; signatureHtml: string }>(`/senders/${account.id}`, { signatureHtml: html })
+              setSaved(html)
+              setNote(`Signature saved.${r.signatureRemoved.length ? ` Taken out for safety: ${r.signatureRemoved.join('; ')}.` : ''}`)
+              onSaved()
+            })
+          }
+        >
+          {act.busy === 'signature' ? 'Saving…' : 'Save signature'}
+        </button>
+        {note && <span className="cell-dim">{note}</span>}
+      </div>
+      {act.error && (
+        <p className="note" role="alert" style={{ color: 'var(--bad)' }}>
+          {act.error}
+        </p>
+      )}
+    </div>
   )
 }

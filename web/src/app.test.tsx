@@ -75,6 +75,7 @@ function stub(opts: { role?: string; blocked?: boolean; campaign?: any; tracking
     if (p === '/api/config') return json(opts.tracking ? { ...CONFIG, tracking: { enabled: true, reason: null } } : CONFIG)
     if (p === '/api/campaigns' && method === 'GET') return json({ campaigns: [] })
     if (p === '/api/senders' && method === 'GET') return json({ accounts: [ACCOUNT], googleConfigured: true })
+    if (p === '/api/senders/acc1' && method === 'PATCH') return json({ ...ACCOUNT, signatureHtml: body.signatureHtml, signatureRemoved: [] })
     if (p === '/api/senders/connect') return json({ url: 'https://accounts.google.com/o/oauth2/v2/auth?state=abc' })
     if (p === '/api/senders/app-password') return json({ ...ACCOUNT, id: 'acc2', email: body.email, authType: 'app_password', displayName: body.displayName ?? null }, 201)
     if (p === '/api/templates' && method === 'GET') return json({ templates: [{ id: 'tpl1', name: 'Intro', subject: 'A proposal for [Company Name]', bodyHtml: '<p>Hi [First Name]</p>', createdByUserId: 'u1', updatedAt: '' }, { id: 'tpl2', name: 'Mailer 1 – Discovery', subject: 'Invitation: booth 323', bodyHtml: '<p>One</p>', createdByUserId: 'u1', updatedAt: '' }, { id: 'tpl3', name: 'Mailer 2 – PiatIQ and RotoSight', subject: 'Invitation: booth 323', bodyHtml: '<p>Two</p>', createdByUserId: 'u1', updatedAt: '' }] })
@@ -259,6 +260,24 @@ describe('a new campaign, step by step', () => {
     await userEvent.click(screen.getByRole('checkbox', { name: /I reviewed these/ }))
     await userEvent.click(screen.getByRole('button', { name: 'Approve and start sending' }))
     await waitFor(() => expect(posts('/campaigns/start')[0]!.body).toMatchObject({ trackOpens: true, confirm: true }))
+  })
+
+  it('a signature (with the company logo) is written under the chosen sender, saved first, and then added to every email', async () => {
+    stub()
+    await toEmailStep()
+    await userEvent.selectOptions(screen.getByLabelText('Sender account'), 'acc1')
+    await userEvent.selectOptions(await screen.findByLabelText('Saved template 1'), 'tpl1')
+    const box = await screen.findByRole('textbox', { name: 'Signature' })
+    expect(screen.getByRole('button', { name: 'Add logo / picture' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Save signature' })).toBeDisabled()
+    box.innerHTML = '<p>Warm regards,<br>Sam</p><img src="data:image/png;base64,iVBORw0KGgo=" alt="Logo">'
+    box.dispatchEvent(new Event('input', { bubbles: true }))
+    // An unsaved signature is never reviewed: it must be saved first.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Next: review emails' })).toBeDisabled())
+    await userEvent.click(screen.getByRole('button', { name: 'Save signature' }))
+    expect(await screen.findByText(/Signature saved/)).toBeInTheDocument()
+    expect(calls.filter((c) => c.method === 'PATCH' && c.url === '/api/senders/acc1')[0]!.body.signatureHtml).toContain('data:image/png;base64')
+    expect(screen.getByRole('button', { name: 'Next: review emails' })).toBeEnabled()
   })
 
   it('a template can be written for the campaign; two templates offer in-order or random', async () => {
