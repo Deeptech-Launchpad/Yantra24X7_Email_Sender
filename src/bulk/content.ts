@@ -170,7 +170,12 @@ export interface ComposedEmail {
   html: string
   text: string
   unfilled: string[]
+  /** Unfinished draft text left in the email: {First name|there}, [Part: e.g. 6 mm wall.] … Such an email must not be sent. */
+  draft: string[]
 }
+
+/** Text in { } or [ ] that is not one of the two placeholders this app fills — a draft note or another tool's merge tag. */
+const DRAFT_TEXT = /\{[^{}\n]{1,80}\}|\[[^[\]\n]{1,120}\]/g
 
 /** The email exactly as one person receives it: the template filled for them, and the signature under it. */
 export function composeEmail(input: { template: PreparedTemplate; firstName: string | null; companyName: string | null; signatureHtml?: string }): ComposedEmail {
@@ -181,7 +186,9 @@ export function composeEmail(input: { template: PreparedTemplate; firstName: str
   const sig = (input.signatureHtml ?? '').trim()
   const sigText = sig ? htmlToText(sig) : ''
   const text = htmlToText(html) + (sigText ? `\n\n${sigText}` : '')
+  const draft = [...new Set(`${subject.text}\n${text}`.match(DRAFT_TEXT) ?? [])].filter((t) => !/^\[(First Name|Company Name)\]$/.test(t)).map((t) => t.slice(0, 70))
   return {
+    draft,
     subject: subject.text,
     html: `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;color:#222">${html}${sig ? `<div><br></div><div>${sig}</div>` : ''}</div>`,
     text,

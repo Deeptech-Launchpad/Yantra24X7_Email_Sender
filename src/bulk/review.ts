@@ -327,6 +327,10 @@ export async function prepareReview(user: Principal, s: CampaignSetup, now = new
     // One template per sheet (sheet i → template i), or the rotation of the campaign's templates.
     const pick = setup.bySheet ? (c.sheetIdx ?? 0) : pickTemplate(setup.order, setup.templates.length, readyCount, setup.seed)
     const email = composeEmail({ template: setup.templates[pick]!, firstName: greetingName(to), companyName: c.companyName, signatureHtml: account.signatureHtml })
+    if (email.draft.length) {
+      skip('invalid', `The template still contains draft text that is not filled in: ${email.draft.slice(0, 3).join(' ')}${email.draft.length > 3 ? ' …' : ''} Edit the template (only [First Name] and [Company Name] are filled).`, { contactName: to.name, toEmail: to.email })
+      continue
+    }
     if (email.unfilled.length) {
       skip('invalid', `Could not fill ${email.unfilled.join(', ')}.`, { contactName: to.name, toEmail: to.email })
       continue
