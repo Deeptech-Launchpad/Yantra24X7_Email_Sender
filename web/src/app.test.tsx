@@ -247,16 +247,14 @@ describe('a new campaign, step by step', () => {
     expect(posts('/campaigns/review').at(-1)!.body.trackOpens).toBeUndefined()
   })
 
-  it('with tracking set up, "Track opens" is an option of the campaign: it is sent with the review and the approval, and starts off', async () => {
+  it('with tracking set up, "Track opens" is ticked by default: it is sent with the review and the approval, and can be unticked', async () => {
     stub({ tracking: true })
     await toScheduleStep()
     const box = screen.getByRole('checkbox', { name: 'Track opens' })
     expect(box).toBeEnabled()
-    expect(box).not.toBeChecked() // opt-in: recipients are not tracked unless it is ticked
+    expect(box).toBeChecked() // on by default whenever the server has tracking set up
     expect(screen.getByText(/a signal, not proof of reading/)).toBeInTheDocument()
-    await userEvent.click(box)
-    await userEvent.click(await screen.findByRole('button', { name: 'Show the sending times' }))
-    expect(await screen.findByText('on')).toBeInTheDocument()
+    expect(await screen.findByText('on')).toBeInTheDocument() // the review already counts it
     await waitFor(() => expect(posts('/campaigns/review').at(-1)!.body.trackOpens).toBe(true))
     await userEvent.click(screen.getByRole('checkbox', { name: /I reviewed these/ }))
     await userEvent.click(screen.getByRole('button', { name: 'Approve and start sending' }))

@@ -126,7 +126,8 @@ export function NewCampaign() {
   const [plans, setPlans] = useState<SheetPlan[]>([])
   const [onePer, setOnePer] = useState<OnePer>('company')
   const [replyTo, setReplyTo] = useState('')
-  const [trackOpens, setTrackOpens] = useState(false)
+  // Ticked from the start whenever the server has tracking set up, so every bulk email is tracked unless it is unticked.
+  const [trackOpens, setTrackOpens] = useState(config.tracking.enabled)
   const [analysis, setAnalysis] = useState<Analysis | null>(null)
   const [senderId, setSenderId] = useState('')
   const [templates, setTemplates] = useState<TemplateChoice[]>([{ key: 1, source: 'saved', templateId: '', subject: '', bodyHtml: '' }])
