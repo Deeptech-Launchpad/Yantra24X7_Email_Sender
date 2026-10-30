@@ -33,13 +33,28 @@ describe('templates', () => {
     expect(fillText('[First Name]', { firstName: '  ', companyName: null }).unfilled).toEqual(['[First Name]'])
   })
 
-  it('unfinished draft text ({First name|there}, [Part: …], [where the data is stored]) is reported, so such an email is never approved; the two real placeholders are not draft text', () => {
+  it('the merge form {First name}, {Company name} and {First name|there} works like [First Name]: the word after the bar is used when the person has no first name', () => {
+    const t = prepareTemplate({ subject: 'For {Company name|your company}', bodyHtml: '<div>Dear {First name|there},</div><div>Hello {first name}, about {Company name}.</div>' })
+    const withName = composeEmail({ template: t, firstName: 'Ann', companyName: 'A&B' })
+    expect(withName.subject).toBe('For A&B')
+    expect(withName.html).toContain('Dear Ann,')
+    expect(withName.html).toContain('Hello Ann, about A&amp;B.')
+    expect(withName).toMatchObject({ unfilled: [], draft: [] })
+    const noName = composeEmail({ template: t, firstName: null, companyName: null })
+    expect(noName.subject).toBe('For your company')
+    expect(noName.html).toContain('Dear there,')
+    // no fallback given: the blank value is reported (never sent as a tag), and it is not "draft text"
+    expect(noName.unfilled.sort()).toEqual(['{Company name}', '{first name}'])
+    expect(noName.draft).toEqual([])
+  })
+
+  it('unfinished draft text ({Title}, [Part: …], [where the data is stored]) is reported, so such an email is never approved; the two real placeholders are not draft text', () => {
     const draftTemplate = prepareTemplate({
       subject: 'Rotoplas #323',
-      bodyHtml: '<div>Dear {First name|there},</div><div>cycle time fell, [with no change in part quality]. [Part: e.g. 1,000-litre tank, 6 mm wall.]</div><div>Neither tool connects, and [where the data is stored].</div>',
+      bodyHtml: '<div>Dear {Title} {First name|there},</div><div>cycle time fell, [with no change in part quality]. [Part: e.g. 1,000-litre tank, 6 mm wall.]</div><div>Neither tool connects, and [where the data is stored].</div>',
     })
     const e = composeEmail({ template: draftTemplate, firstName: 'Ann', companyName: 'Acme' })
-    expect(e.draft).toEqual(['{First name|there}', '[with no change in part quality]', '[Part: e.g. 1,000-litre tank, 6 mm wall.]', '[where the data is stored]'])
+    expect(e.draft).toEqual(['{Title}', '[with no change in part quality]', '[Part: e.g. 1,000-litre tank, 6 mm wall.]', '[where the data is stored]'])
     const clean = prepareTemplate({ subject: 'For [Company Name]', bodyHtml: '<p>Dear [First Name],</p><p>Using <a href="https://www.example.com/a[1]">our site</a> (see page 2).</p>' })
     expect(composeEmail({ template: clean, firstName: 'Ann', companyName: 'Acme' }).draft).toEqual([])
     // a blank name stays an "unfilled" problem of its own, not draft text

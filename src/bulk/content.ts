@@ -19,7 +19,12 @@ export const MAX_SIGNATURE_IMAGE_BYTES = 400_000
 export const MAX_TEMPLATES_PER_CAMPAIGN = 3
 export const PLACEHOLDERS = ['[First Name]', '[Company Name]'] as const
 
-const PLACEHOLDER = /\[(First Name|Company Name)\]/g
+// [First Name] and [Company Name], or the merge form many mailing tools use: {First name}, {Company name} and
+// {First name|there} — the word after the bar is used when the person has no first name ("Dear there,").
+const PLACEHOLDER = /\[(First Name|Company Name)\]|\{(First name|Company name)(?:\|([^{}|\n]{1,40}))?\}/gi
+const PLACEHOLDER_ONLY = /^(?:\[(?:First Name|Company Name)\]|\{(?:First name|Company name)(?:\|[^{}|\n]{1,40})?\})$/i
+/** Which value a matched placeholder asks for. */
+const isFirstName = (bracket: string | undefined, brace: string | undefined) => /^first/i.test(bracket ?? brace ?? '')
 const DATA_IMAGE = /^data:image\/(png|jpe?g|gif|webp);base64,([A-Za-z0-9+/=\s]+)$/i
 // CSS that could load or run something is removed; every other declaration is kept.
 const BAD_CSS = /expression\s*\(|javascript\s*:|vbscript\s*:|behavior\s*:|-moz-binding|@import|url\s*\(\s*['"]?\s*(?!https:)/i
@@ -147,9 +152,10 @@ export function prepareSignature(html: string): { html: string; removed: string[
 /** Fills the two placeholders in plain text; a blank value is reported, never sent as a bracket. */
 export function fillText(text: string, values: { firstName: string | null; companyName: string | null }): { text: string; unfilled: string[] } {
   const unfilled: string[] = []
-  const out = text.replace(PLACEHOLDER, (token, name: string) => {
-    const v = name === 'First Name' ? values.firstName : values.companyName
+  const out = text.replace(PLACEHOLDER, (token, bracket: string | undefined, brace: string | undefined, fallback: string | undefined) => {
+    const v = isFirstName(bracket, brace) ? values.firstName : values.companyName
     if (!v || !v.trim()) {
+      if (fallback) return fallback.trim()
       unfilled.push(token)
       return token
     }
@@ -159,9 +165,10 @@ export function fillText(text: string, values: { firstName: string | null; compa
 }
 
 function fillHtml(html: string, values: { firstName: string | null; companyName: string | null }): string {
-  return html.replace(PLACEHOLDER, (token, name: string) => {
-    const v = name === 'First Name' ? values.firstName : values.companyName
-    return v && v.trim() ? escapeHtml(v.trim()) : token
+  return html.replace(PLACEHOLDER, (token, bracket: string | undefined, brace: string | undefined, fallback: string | undefined) => {
+    const v = isFirstName(bracket, brace) ? values.firstName : values.companyName
+    if (v && v.trim()) return escapeHtml(v.trim())
+    return fallback ? fallback.trim() : token
   })
 }
 
@@ -186,7 +193,7 @@ export function composeEmail(input: { template: PreparedTemplate; firstName: str
   const sig = (input.signatureHtml ?? '').trim()
   const sigText = sig ? htmlToText(sig) : ''
   const text = htmlToText(html) + (sigText ? `\n\n${sigText}` : '')
-  const draft = [...new Set(`${subject.text}\n${text}`.match(DRAFT_TEXT) ?? [])].filter((t) => !/^\[(First Name|Company Name)\]$/.test(t)).map((t) => t.slice(0, 70))
+  const draft = [...new Set(`${subject.text}\n${text}`.match(DRAFT_TEXT) ?? [])].filter((t) => !PLACEHOLDER_ONLY.test(t)).map((t) => t.slice(0, 70))
   return {
     draft,
     subject: subject.text,
