@@ -60,8 +60,8 @@ yanthara bulk email process project/
 │   ├── bulk/                    excel, extract, content, schedule, files, companyZip, review,
 │   │                            campaigns, dispatcher, senders, templates, suppression, tracking
 │   └── routes/api.ts            every API route, validated
-├── tests/                       98 tests: the whole workflow through the API against a fake Google and a fake Gmail mail server
-└── web/                         the screens (React + Vite), orange and white; 13 tests
+├── tests/                       100 tests: the whole workflow through the API against a fake Google and a fake Gmail mail server
+└── web/                         the screens (React + Vite), orange and white; 17 tests
 ```
 
 ---
@@ -168,10 +168,17 @@ test addresses).
 
 ---
 
-## Open tracking — later, once the domain and server are known
+## Open tracking — the option is built; it switches on once the domain and server are known
 
-Tracking is **off** and nothing is counted. It needs this application's **own public HTTPS address**; never another
-company's domain. When you provide the domain and server IP:
+Each bulk email has a **Track opens** option (step 3, *Date, time and start*; off unless ticked). It can be ticked only
+when the server has tracking set up; until then the box is greyed out and says why. A tracked bulk email shows, on its
+page, **Opened** (with the first time) or **Not opened yet** for every person who was sent the email, filters for
+*opened* / *not opened*, an *Opened* count in the list, and an *Opened?* column in the CSV report. An open is a signal,
+not proof of reading (images can be blocked or pre-loaded by scanners), and recipients are not told that opens are
+recorded — review your privacy wording before using it.
+
+The option needs this application's **own public HTTPS address** (the recipient's mail program loads the image from
+it, so `localhost` cannot work); never another company's domain. When you provide the domain and server IP:
 
 1. Point a DNS record (e.g. `bulk.<yanthara-domain>`) at the server IP.
 2. Put the app behind HTTPS (e.g. nginx + Let's Encrypt) proxying to `PORT`; make sure `GET /t/<token>.gif` reaches the app.

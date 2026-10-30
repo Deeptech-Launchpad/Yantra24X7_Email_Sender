@@ -76,6 +76,7 @@ export async function startCampaign(user: Principal, s: CampaignSetup & { confir
         templatesJson: toJson(review.setup.templates.map((t) => ({ subject: t.subject, html: t.html }))),
         ccJson: toJson(review.cc),
         replyTo: review.replyTo,
+        trackOpens: review.trackOpens,
         recipientMode: review.onePer,
         sheetName: review.sheet,
         copyColleagues: review.copyColleagues,
@@ -175,6 +176,7 @@ const campaignRow = (c: Awaited<ReturnType<typeof prisma.campaign.findFirst>> & 
   templateMode: c.templateMode,
   cc: fromJson<string[]>(c.ccJson, []),
   replyTo: c.replyTo,
+  trackOpens: c.trackOpens,
   recipientMode: c.recipientMode,
   sheetName: c.sheetName,
   copyColleagues: c.copyColleagues,
@@ -231,6 +233,7 @@ export async function campaignView(id: string) {
       gmailMessageId: r.gmailMessageId,
       openCount: r.openCount,
       firstOpenedLocal: r.firstOpenedAt ? fmtLocal(r.firstOpenedAt, c.timezone) : null,
+      lastOpenedLocal: r.lastOpenedAt ? fmtLocal(r.lastOpenedAt, c.timezone) : null,
       trackingEnabled: r.trackingEnabled,
     })),
     sendMode: env.SEND_MODE,
@@ -362,11 +365,11 @@ export function csvCell(v: unknown): string {
 
 export async function campaignReportCsv(id: string): Promise<{ fileName: string; csv: string }> {
   const v = await campaignView(id)
-  const head = ['Row', 'Sheet', 'Company', 'Contact', 'To', 'CC', 'Status', 'Category', 'Reason', 'Template', 'Subject', 'Company PDF', 'Scheduled', 'Sent', 'Attempts', 'Gmail message id', 'Opens', 'First opened']
+  const head = ['Row', 'Sheet', 'Company', 'Contact', 'To', 'CC', 'Status', 'Category', 'Reason', 'Template', 'Subject', 'Company PDF', 'Scheduled', 'Sent', 'Attempts', 'Gmail message id', 'Opened?', 'Opens', 'First opened']
   const lines = [head.map(csvCell).join(',')]
   for (const r of v.recipients) {
     lines.push(
-      [r.position + 1, r.sheet, r.companyName, r.contactName, r.toEmail, r.cc.join('; '), r.status, r.category, r.reason, r.templateNumber, r.subject, r.companyFile?.fileName, r.scheduledLocal, r.sentLocal, r.attempts, r.gmailMessageId, r.trackingEnabled ? r.openCount : '', r.firstOpenedLocal]
+      [r.position + 1, r.sheet, r.companyName, r.contactName, r.toEmail, r.cc.join('; '), r.status, r.category, r.reason, r.templateNumber, r.subject, r.companyFile?.fileName, r.scheduledLocal, r.sentLocal, r.attempts, r.gmailMessageId, r.trackingEnabled ? (r.openCount > 0 ? 'opened' : 'not opened') : '', r.trackingEnabled ? r.openCount : '', r.firstOpenedLocal]
         .map(csvCell)
         .join(','),
     )

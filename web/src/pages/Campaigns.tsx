@@ -14,6 +14,7 @@ interface Counts {
   skipped: number
   cancelled: number
   total: number
+  opens?: { tracked: number; opened: number }
 }
 export interface CampaignRow {
   id: string
@@ -151,6 +152,7 @@ export function Campaigns() {
                 <th>Failed</th>
                 <th>Unknown</th>
                 <th>Not sent</th>
+                <th>Opened</th>
                 <th />
               </tr>
             </thead>
@@ -172,6 +174,7 @@ export function Campaigns() {
                   <td className="tnum">{c.counts.failed}</td>
                   <td className="tnum">{c.counts.unknown}</td>
                   <td className="tnum">{c.counts.skipped + c.counts.cancelled}</td>
+                  <td className="tnum">{c.counts.opens && c.counts.opens.tracked > 0 ? `${c.counts.opens.opened} of ${c.counts.opens.tracked}` : '—'}</td>
                   <td>
                     <Link className="btn small" to={`/campaigns/${c.id}`} style={{ textDecoration: 'none' }}>
                       Open

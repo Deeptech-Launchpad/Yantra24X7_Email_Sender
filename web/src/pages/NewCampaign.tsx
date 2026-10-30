@@ -82,6 +82,7 @@ interface Review {
   templateOrder: string | null
   cc: string[]
   replyTo: string | null
+  trackOpens: boolean
   onePer: OnePer
   sheet: string
   sheets: string[]
@@ -125,6 +126,7 @@ export function NewCampaign() {
   const [plans, setPlans] = useState<SheetPlan[]>([])
   const [onePer, setOnePer] = useState<OnePer>('company')
   const [replyTo, setReplyTo] = useState('')
+  const [trackOpens, setTrackOpens] = useState(false)
   const [analysis, setAnalysis] = useState<Analysis | null>(null)
   const [senderId, setSenderId] = useState('')
   const [templates, setTemplates] = useState<TemplateChoice[]>([{ key: 1, source: 'saved', templateId: '', subject: '', bodyHtml: '' }])
@@ -160,6 +162,7 @@ export function NewCampaign() {
     ...(mode === 'sheets' ? { sheets: usedPlans.map((p) => p.sheet) } : sheet ? { sheet } : {}),
     onePer,
     ...(replyTo.trim() ? { replyTo: replyTo.trim() } : {}),
+    ...(trackOpens ? { trackOpens: true } : {}),
     senderAccountId: senderId,
     templates:
       mode === 'sheets'
@@ -915,6 +918,17 @@ export function NewCampaign() {
               <input type="text" aria-label="Name" maxLength={120} value={name} onChange={(e) => setName(e.target.value)} placeholder="For example: November proposals" />
             </label>
           </div>
+          <label className="otr-check">
+            <input type="checkbox" aria-label="Track opens" checked={trackOpens} disabled={!config.tracking.enabled} onChange={(e) => (setTrackOpens(e.target.checked), invalidate())} />
+            <span>
+              <strong>Track opens</strong> — see which recipients opened the email.{' '}
+              {config.tracking.enabled ? (
+                <span className="cell-dim">An open is detected when the email&rsquo;s invisible image loads. Some mail programs block images, and some privacy features and security scanners load them without anyone reading — so it is a signal, not proof of reading or of interest. Recipients are not told that opens are recorded.</span>
+              ) : (
+                <span className="cell-dim">Not available yet: {config.tracking.reason}</span>
+              )}
+            </span>
+          </label>
           {!review ? (
             <div className="row" style={{ marginTop: 'var(--s3)' }}>
               <button type="button" className="btn quiet" onClick={() => go('review')}>
@@ -954,6 +968,9 @@ export function NewCampaign() {
                 )}
                 <li>
                   Replies go to: <strong>{review.replyTo ?? review.sender.email}</strong>
+                </li>
+                <li>
+                  Open tracking: <strong>{review.trackOpens ? 'on' : 'off'}</strong>
                 </li>
                 <li>CC: {[...(review.copyColleagues ? ['colleagues from the Excel'] : []), ...review.cc].join(', ') || 'none'}</li>
                 <li>

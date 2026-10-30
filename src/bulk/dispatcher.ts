@@ -166,7 +166,8 @@ async function sendOne(c: Campaign, r: Recipient, now: Date): Promise<keyof Tick
   const inline = inlineImages(r.bodyHtml)
   let html = inline.html
   let trackingHash: string | null = null
-  if (trackingStatus().enabled) {
+  // Only a bulk email that asked for it, and only while tracking is set up on this server.
+  if (c.trackOpens && trackingStatus().enabled) {
     const token = newTrackingToken()
     trackingHash = hashToken(token)
     html = addPixel(html, token)

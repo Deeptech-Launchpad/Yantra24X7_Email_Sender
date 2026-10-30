@@ -226,6 +226,7 @@ const Setup = z
     sheets: z.array(z.string().min(1).max(100)).min(1).max(3).optional(),
     onePer: z.enum(['company', 'person']).optional(),
     replyTo: z.string().max(254).optional(),
+    trackOpens: z.boolean().optional(),
     senderAccountId: id,
     templates: z.array(z.object({ templateId: id.optional(), subject: z.string().max(MAX_SUBJECT + 50).optional(), bodyHtml: z.string().max(MAX_TEMPLATE_HTML + 5000).optional() }).strict()).min(1).max(MAX_TEMPLATES_PER_CAMPAIGN),
     templateOrder: z.enum(['sequential', 'random']).optional(),

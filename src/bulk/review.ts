@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { env } from '../config/env.js'
 import { prisma } from '../platform/db.js'
-import { BadRequestError } from '../platform/errors.js'
+import { BadRequestError, ConflictError } from '../platform/errors.js'
 import type { Principal } from '../auth/users.js'
 import { checkMatchedTotal, matchCompanyFiles, type CompanyMatch, type ZipFile, type ZipScan } from './companyZip.js'
 import { composeEmail, MAX_TEMPLATES_PER_CAMPAIGN, pickTemplate, prepareTemplate, type PreparedTemplate, type TemplateOrder } from './content.js'
@@ -9,6 +9,7 @@ import { readSpreadsheet } from './excel.js'
 import { extractContacts, greetingName, perPerson, recipientsOf, strictEmail, type Extraction } from './extract.js'
 import { MAX_COMMON_FILES, MAX_EMAIL_ATTACHMENT_BYTES, readStaged, scanStagedZip, stagedCommon, stagedZipInfo, type FileInfo, type StagedZip } from './files.js'
 import { fmtLocal, localToUtc, planSequential } from './schedule.js'
+import { trackingStatus } from './tracking.js'
 import { readiness, usableAccount } from './senders.js'
 import { suppressedSet } from './suppression.js'
 
@@ -46,6 +47,8 @@ export interface CampaignSetup {
   onePer?: RecipientMode
   /** Where replies go, when not to the sender. */
   replyTo?: string
+  /** Detect whether each email is opened (needs open tracking to be set up on the server). */
+  trackOpens?: boolean
   senderAccountId: string
   /** 1-3 templates: a saved one (templateId) or written here (subject + bodyHtml). */
   templates: Array<{ templateId?: string; subject?: string; bodyHtml?: string }>
@@ -137,6 +140,10 @@ export async function checkSetup(s: CampaignSetup): Promise<PreparedSetup> {
   if (cc.length > MAX_CC) throw new BadRequestError(`At most ${MAX_CC} CC addresses.`)
   const replyTo = s.replyTo?.trim() ? strictEmail(s.replyTo) : null
   if (s.replyTo?.trim() && !replyTo) throw new BadRequestError(`"${s.replyTo.slice(0, 80)}" is not a valid reply-to address.`)
+  if (s.trackOpens === true) {
+    const t = trackingStatus()
+    if (!t.enabled) throw new ConflictError(`Open tracking cannot be switched on yet: ${t.reason}`)
+  }
   const start = localToUtc(s.startDate, s.startTime)
   if (!start) throw new BadRequestError('Choose the date and the time sending starts.')
   const intervalMinutes = Math.round(Number(s.intervalMinutes))
@@ -369,6 +376,7 @@ export async function prepareReview(user: Principal, s: CampaignSetup, now = new
         sender: account.email,
         sendMode: env.SEND_MODE,
         replyTo: setup.replyTo,
+        trackOpens: s.trackOpens === true,
         attachments: attachments.map((a) => [a.id, a.sizeBytes]),
         rows: rows.map((r) => [r.position, r.status, r.category, r.toEmail, r.ccEmails, r.subject, r.html, r.text, r.templateNumber, r.sheet, companyFiles.get(r.position)?.sha256 ?? r.companyFile?.fileName ?? null]),
       }),
@@ -396,6 +404,7 @@ export async function prepareReview(user: Principal, s: CampaignSetup, now = new
     templateOrder: setup.bySheet ? ('by_sheet' as const) : setup.templates.length > 1 ? setup.order : null,
     cc: setup.cc,
     replyTo: setup.replyTo,
+    trackOpens: s.trackOpens === true,
     sheet: upload.sheet,
     sheets: upload.bySheet ? (s.sheets ?? []) : [upload.sheet],
     onePer: upload.onePer,

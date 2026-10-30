@@ -114,6 +114,8 @@ model Campaign {
   ccJson            String
   /// Where replies go (Reply-To), when not to the sender.
   replyTo           String?
+  /// Each email carries an invisible image, so an open can be seen (only when open tracking is set up).
+  trackOpens        Boolean   @default(false)
   /// company (one email per company, colleagues copied) | person (one email per person)
   recipientMode     String    @default("company")
   /// The worksheet of the Excel file the recipients came from.

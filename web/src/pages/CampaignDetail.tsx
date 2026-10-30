@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { api, type FileInfo } from '../api'
 import { canSend, useSession } from '../App'
-import { Banner, formatSize, Html, Status, Tile, useAction, useLoad } from '../ui'
+import { Banner, Chip, formatSize, Html, Status, Tile, useAction, useLoad } from '../ui'
 
 interface RecipientRow {
   id: string
@@ -22,6 +22,8 @@ interface RecipientRow {
   scheduledLocal: string | null
   sentLocal: string | null
   openCount: number
+  firstOpenedLocal: string | null
+  lastOpenedLocal: string | null
   trackingEnabled: boolean
 }
 interface View {
@@ -31,6 +33,7 @@ interface View {
     status: string
     statusReason: string | null
     sendMode: string
+    trackOpens: boolean
     createdByUserId: string
     fromEmail: string
     replyTo: string | null
@@ -52,7 +55,7 @@ interface View {
   canCheckSent: boolean
 }
 
-const FILTERS = ['all', 'sent', 'scheduled', 'failed', 'unknown', 'skipped', 'cancelled'] as const
+const FILTERS = ['all', 'sent', 'scheduled', 'failed', 'unknown', 'skipped', 'cancelled', 'opened', 'not opened'] as const
 
 export function CampaignDetail() {
   const { id = '' } = useParams()
@@ -80,7 +83,12 @@ export function CampaignDetail() {
     await api.post(`/campaigns/${id}/${to}`)
     refresh()
   })
-  const rows = data.recipients.filter((r) => filter === 'all' || r.status === filter)
+  const rows = data.recipients.filter((r) => {
+    if (filter === 'all') return true
+    if (filter === 'opened') return r.trackingEnabled && r.openCount > 0
+    if (filter === 'not opened') return r.trackingEnabled && r.status === 'sent' && r.openCount === 0
+    return r.status === filter
+  })
 
   return (
     <>
@@ -133,9 +141,15 @@ export function CampaignDetail() {
         <Tile n={k.skippedDuplicate} label="Duplicate" />
         <Tile n={k.skippedExcluded} label="Excluded" />
         <Tile n={k.cancelled} label="Cancelled" />
-        {data.tracking.enabled ? <Tile n={`${k.opens.opened}/${k.opens.tracked}`} label="Opened (tracked)" /> : null}
+        {c.trackOpens ? <Tile n={`${k.opens.opened}/${k.opens.tracked}`} label="Opened (of tracked)" brand /> : null}
       </div>
-      {!data.tracking.enabled && <p className="note">{data.tracking.reason}</p>}
+      {!c.trackOpens && <p className="note">Open tracking was not switched on for this bulk email.</p>}
+      {c.trackOpens && (
+        <p className="note">
+          An open is detected when the email&rsquo;s invisible image loads. Some mail programs block images, and security scanners can load them without anyone reading — so &ldquo;Not opened yet&rdquo; is not proof that nobody read it, and
+          &ldquo;Opened&rdquo; is a signal, not proof.
+        </p>
+      )}
 
       {may && (k.failed > 0 || k.unknown > 0) && (
         <div className="card">
@@ -227,6 +241,7 @@ export function CampaignDetail() {
                 <th>Company</th>
                 <th>To / CC</th>
                 <th>Status</th>
+                {c.trackOpens && <th>Opened</th>}
                 <th>Reason</th>
                 <th>When</th>
                 <th>PDF</th>
@@ -251,8 +266,23 @@ export function CampaignDetail() {
                   <td>
                     <Status value={r.status} />
                     {r.category && <div className="muted">{r.category}</div>}
-                    {r.trackingEnabled && r.openCount > 0 && <div className="muted">opened {r.openCount}×</div>}
                   </td>
+                  {c.trackOpens && (
+                    <td>
+                      {r.trackingEnabled && r.openCount > 0 ? (
+                        <>
+                          <Chip tone="ok">Opened{r.openCount > 1 ? ` ×${r.openCount}` : ''}</Chip>
+                          <div className="cell-dim">first {r.firstOpenedLocal}</div>
+                        </>
+                      ) : r.trackingEnabled && r.status === 'sent' ? (
+                        <Chip>Not opened yet</Chip>
+                      ) : r.status === 'sent' ? (
+                        <span className="cell-dim">Not tracked</span>
+                      ) : (
+                        '—'
+                      )}
+                    </td>
+                  )}
                   <td className="muted">{r.reason ?? ''}</td>
                   <td className="muted">{r.sentLocal ?? r.scheduledLocal ?? '—'}</td>
                   <td className="muted">{r.companyFile?.fileName ?? ''}</td>

@@ -178,7 +178,7 @@ describe('the full workflow', () => {
     expect(csv.status).toBe(200)
     expect(csv.headers.get('content-disposition')).toMatch(/attachment; filename=".*report\.csv"/)
     const lines = csv.text.replace(/^﻿/, '').trim().split('\r\n')
-    expect(lines[0]).toBe('Row,Sheet,Company,Contact,To,CC,Status,Category,Reason,Template,Subject,Company PDF,Scheduled,Sent,Attempts,Gmail message id,Opens,First opened')
+    expect(lines[0]).toBe('Row,Sheet,Company,Contact,To,CC,Status,Category,Reason,Template,Subject,Company PDF,Scheduled,Sent,Attempts,Gmail message id,Opened?,Opens,First opened')
     expect(lines).toHaveLength(1 + 7)
     expect(lines.find((l) => l.startsWith('1,Sheet1,Alpha Industries'))).toMatch(/ann@alpha\.example,abe@alpha\.example; manager@yanthara\.example,sent,,,,A proposal for Alpha Industries,Alpha Industries\.pdf/)
     expect(lines.find((l) => l.includes('Echo LLC'))).toMatch(/skipped,excluded,"?Already contacted/)
@@ -583,21 +583,54 @@ describe('open tracking (off until a domain is configured)', () => {
     expect(cfg.tracking).toEqual({ enabled: false, reason: expect.stringMatching(/Open tracking is off/) })
   })
 
-  it('once configured with a public https address, each email gets its own image, and fetching it counts an open', async () => {
+  const TWO = async () => {
+    const bytes = await xlsx([HEADER, ['Alpha Industries', 'a', 'Ann Lee', 'CEO', 'ann@alpha.example', '', '', '', ''], ['Bravo Ltd', 'b', 'Bob Ray', 'Owner', 'bob@bravo.example', '', '', '', '']])
+    return (await member.upload('/api/files/excel', 'two.xlsx', bytes)).body.id as string
+  }
+  const pixelToken = (mime: string) => /https:\/\/mail\.yanthara\.example\/t\/([A-Za-z0-9_-]+)\.gif/.exec(mime.replace(/=\r\n/g, '').replace(/=3D/g, '='))?.[1]
+
+  it('"Track opens" can only be ticked once tracking is set up on the server, and says why not', async () => {
+    const excel = await TWO()
+    const r = await member.post('/api/campaigns/review', setup(excel, { cc: [], trackOpens: true }))
+    expect(r.status).toBe(409)
+    expect(r.body.error.message).toMatch(/Open tracking cannot be switched on yet: Open tracking is off/)
+    expect(await prisma.campaign.count()).toBe(0)
+  })
+
+  it('without the option ticked no image is added, even when the server has tracking set up', async () => {
     Object.assign(env, { TRACKING_ENABLED: true, TRACKING_BASE_URL: 'https://mail.yanthara.example' })
-    const excel = (await member.upload('/api/files/excel', 'one.xlsx', await xlsx([HEADER, ['Alpha Industries', 'a', 'Ann Lee', 'CEO', 'ann@alpha.example', '', '', '', '']]))).body.id
-    const id = (await member.approve({ ...setup(excel, { cc: [] }) })).body.campaignId
+    const excel = await TWO()
+    const id = (await member.approve(setup(excel, { cc: [] }))).body.campaignId
     await tick()
-    // Opens within 15 seconds of sending are mail scanners: the email is made to look sent a few minutes ago.
-    await prisma.recipient.updateMany({ where: { campaignId: id }, data: { sentAt: new Date(Date.now() - 5 * 60_000) } })
-    const mime = google.sent[0]!.mime.replace(/=\r\n/g, '').replace(/=3D/g, '=')
-    const token = /https:\/\/mail\.yanthara\.example\/t\/([A-Za-z0-9_-]+)\.gif/.exec(mime)?.[1]
-    expect(token).toBeTruthy()
-    const img = await fetch(`${app.base}/t/${token}.gif`)
-    expect(img.headers.get('content-type')).toBe('image/gif')
-    await new Promise((r) => setTimeout(r, 100))
+    expect(pixelToken(google.sent[0]!.mime)).toBeUndefined()
     const v = (await member.get(`/api/campaigns/${id}`)).body
-    expect(v.recipients[0]).toMatchObject({ trackingEnabled: true, openCount: 1 })
-    expect(v.counts.opens).toEqual({ tracked: 1, opened: 1 })
+    expect(v.campaign.trackOpens).toBe(false)
+    expect(v.recipients[0]).toMatchObject({ trackingEnabled: false, openCount: 0 })
+  })
+
+  it('with the option ticked each email gets its own image; an open is counted, and the report says who opened and who did not', async () => {
+    Object.assign(env, { TRACKING_ENABLED: true, TRACKING_BASE_URL: 'https://mail.yanthara.example' })
+    const excel = await TWO()
+    const id = (await member.approve(setup(excel, { cc: [], trackOpens: true }))).body.campaignId
+    await tick()
+    await tick()
+    expect(google.sent).toHaveLength(2)
+    // Opens within 15 seconds of sending are mail scanners: the emails are made to look sent a few minutes ago.
+    await prisma.recipient.updateMany({ where: { campaignId: id }, data: { sentAt: new Date(Date.now() - 5 * 60_000) } })
+    const [t1, t2] = google.sent.map((m) => pixelToken(m.mime))
+    expect(t1).toBeTruthy()
+    expect(t2).toBeTruthy()
+    expect(t1).not.toBe(t2) // one image per email
+    const img = await fetch(`${app.base}/t/${t1}.gif`)
+    expect(img.headers.get('content-type')).toBe('image/gif')
+    await new Promise((r) => setTimeout(r, 150))
+    const v = (await member.get(`/api/campaigns/${id}`)).body
+    expect(v.campaign.trackOpens).toBe(true)
+    expect(v.recipients.map((x: { toEmail: string; trackingEnabled: boolean; openCount: number }) => [x.toEmail, x.trackingEnabled, x.openCount])).toEqual([['ann@alpha.example', true, 1], ['bob@bravo.example', true, 0]])
+    expect(v.recipients[0].firstOpenedLocal).toBeTruthy()
+    expect(v.counts.opens).toEqual({ tracked: 2, opened: 1 })
+    const csv = (await member.get(`/api/campaigns/${id}/report.csv`)).text
+    expect(csv).toMatch(/ann@alpha\.example.*,opened,1,/)
+    expect(csv).toMatch(/bob@bravo\.example.*,not opened,0,/)
   })
 })

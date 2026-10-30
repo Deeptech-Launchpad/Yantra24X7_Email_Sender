@@ -46,6 +46,7 @@ function reviewFor(body: any, opts: { blocked?: boolean }) {
     templateOrder: null,
     cc: body.cc ?? [],
     replyTo: body.replyTo ?? null,
+    trackOpens: body.trackOpens === true,
     onePer: body.onePer ?? 'company',
     sheet: 'Sheet1',
     sheets: body.sheets ?? ['Sheet1'],
@@ -59,7 +60,7 @@ function reviewFor(body: any, opts: { blocked?: boolean }) {
   }
 }
 
-function stub(opts: { role?: string; blocked?: boolean; campaign?: any } = {}) {
+function stub(opts: { role?: string; blocked?: boolean; campaign?: any; tracking?: boolean } = {}) {
   calls = []
   const zipGot: Record<string, number> = {}
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
@@ -71,7 +72,7 @@ function stub(opts: { role?: string; blocked?: boolean; campaign?: any } = {}) {
     const p = u.replace(/\?.*$/, '')
     if (p === '/api/auth/login') return body.password === 'right-password-1' ? json({ token: 't1', user: {} }) : json({ error: { message: 'The email or the password is not right.' } }, 401)
     if (p === '/api/auth/me') return json({ user: { id: 'u1', email: 'sam@yanthara.example', name: 'Sam Sales', role: opts.role ?? 'member' } })
-    if (p === '/api/config') return json(CONFIG)
+    if (p === '/api/config') return json(opts.tracking ? { ...CONFIG, tracking: { enabled: true, reason: null } } : CONFIG)
     if (p === '/api/campaigns' && method === 'GET') return json({ campaigns: [] })
     if (p === '/api/senders' && method === 'GET') return json({ accounts: [ACCOUNT], googleConfigured: true })
     if (p === '/api/senders/connect') return json({ url: 'https://accounts.google.com/o/oauth2/v2/auth?state=abc' })
@@ -226,6 +227,42 @@ describe('a new campaign, step by step', () => {
     expect(b.sheet).toBeUndefined()
   })
 
+  // The wizard up to the last step: sender and template chosen, the review made.
+  const toScheduleStep = async () => {
+    await toEmailStep()
+    await userEvent.selectOptions(screen.getByLabelText('Sender account'), 'acc1')
+    await userEvent.selectOptions(await screen.findByLabelText('Saved template 1'), 'tpl1')
+    await userEvent.click(screen.getByRole('button', { name: 'Next: review emails' }))
+    await screen.findByText(/will be sent/)
+    await userEvent.click(screen.getByRole('button', { name: 'Next: date and time' }))
+    await screen.findByRole('button', { name: 'Approve and start sending' })
+  }
+
+  it('"Track opens" cannot be ticked while tracking is not set up on the server, and says why', async () => {
+    stub()
+    await toScheduleStep()
+    const box = screen.getByRole('checkbox', { name: 'Track opens' })
+    expect(box).toBeDisabled()
+    expect(screen.getByText(/Not available yet: Open tracking is off/)).toBeInTheDocument()
+    expect(posts('/campaigns/review').at(-1)!.body.trackOpens).toBeUndefined()
+  })
+
+  it('with tracking set up, "Track opens" is an option of the campaign: it is sent with the review and the approval, and starts off', async () => {
+    stub({ tracking: true })
+    await toScheduleStep()
+    const box = screen.getByRole('checkbox', { name: 'Track opens' })
+    expect(box).toBeEnabled()
+    expect(box).not.toBeChecked() // opt-in: recipients are not tracked unless it is ticked
+    expect(screen.getByText(/a signal, not proof of reading/)).toBeInTheDocument()
+    await userEvent.click(box)
+    await userEvent.click(await screen.findByRole('button', { name: 'Show the sending times' }))
+    expect(await screen.findByText('on')).toBeInTheDocument()
+    await waitFor(() => expect(posts('/campaigns/review').at(-1)!.body.trackOpens).toBe(true))
+    await userEvent.click(screen.getByRole('checkbox', { name: /I reviewed these/ }))
+    await userEvent.click(screen.getByRole('button', { name: 'Approve and start sending' }))
+    await waitFor(() => expect(posts('/campaigns/start')[0]!.body).toMatchObject({ trackOpens: true, confirm: true }))
+  })
+
   it('a template can be written for the campaign; two templates offer in-order or random', async () => {
     stub()
     await toEmailStep()
@@ -287,6 +324,40 @@ describe('a campaign', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Not sent' }))
     await waitFor(() => expect(posts('/campaigns/c1/recipients/r3/resolve')[0]!.body).toEqual({ outcome: 'not_sent' }))
     confirm.mockRestore()
+  })
+})
+
+describe('opens on a campaign', () => {
+  it('shows who opened and who has not opened yet, with filters; a campaign without tracking says so', async () => {
+    const tracked = {
+      ...CAMPAIGN,
+      campaign: { ...CAMPAIGN.campaign, trackOpens: true },
+      counts: { ...CAMPAIGN.counts, opens: { tracked: 2, opened: 1 } },
+      recipients: [
+        { ...CAMPAIGN.recipients[0], trackingEnabled: true, openCount: 2, firstOpenedLocal: 'Thu, Oct 29, 2026, 6:00 PM' },
+        { ...CAMPAIGN.recipients[1], status: 'sent', reason: null, trackingEnabled: true, openCount: 0 },
+        CAMPAIGN.recipients[2],
+      ],
+    }
+    stub({ campaign: tracked })
+    await signedIn('/campaigns/c1')
+    expect(await screen.findByText('1/2')).toBeInTheDocument() // opened of tracked
+    expect(screen.getByText('Opened ×2')).toBeInTheDocument()
+    expect(screen.getByText(/first Thu, Oct 29, 2026, 6:00 PM/)).toBeInTheDocument()
+    expect(screen.getByText('Not opened yet')).toBeInTheDocument()
+    await userEvent.selectOptions(screen.getByLabelText('Filter recipients'), 'not opened')
+    expect(screen.queryByText('Alpha Industries')).toBeNull()
+    expect(screen.getByText('Bravo Ltd')).toBeInTheDocument()
+    await userEvent.selectOptions(screen.getByLabelText('Filter recipients'), 'opened')
+    expect(screen.getByText('Alpha Industries')).toBeInTheDocument()
+    expect(screen.queryByText('Bravo Ltd')).toBeNull()
+  })
+
+  it('a campaign that was not tracked says so and has no Opened column', async () => {
+    stub()
+    await signedIn('/campaigns/c1')
+    expect(await screen.findByText(/Open tracking was not switched on for this bulk email/)).toBeInTheDocument()
+    expect(screen.queryByRole('columnheader', { name: 'Opened' })).toBeNull()
   })
 })
 
